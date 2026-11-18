@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline:
+    name: Generate, load, build and test the warehouse
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: retail
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: retail
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit tests (generator and loader helpers)
+        run: pytest -q
+
+      - name: Extract - generate source CSVs
+        run: python pipeline/generate_data.py
+
+      - name: Load - land CSVs in the raw schema
+        run: python pipeline/load_raw.py
+
+      - name: Check source freshness
+        working-directory: warehouse
+        run: dbt source freshness --profiles-dir .
+
+      - name: Transform and test - dbt build
+        working-directory: warehouse
+        run: dbt build --profiles-dir .
+
+      - name: Generate dbt docs
+        working-directory: warehouse
+        run: dbt docs generate --profiles-dir .
+
+      - name: Print the monthly store performance mart
+        run: |
+          psql -c "select store_name, year_month, revenue, margin_pct
+                   from marts.mart_monthly_store_performance
+                   order by year_month desc, revenue desc
+                   limit 10;"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dbt-docs
+          path: |
+            warehouse/target/index.html
+            warehouse/target/manifest.json
+            warehouse/target/catalog.json
