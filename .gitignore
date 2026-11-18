@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv-dbt/
+.pytest_cache/
+
+# Generated source extracts (rebuild with: python pipeline/generate_data.py)
+data/raw/*.csv
+
+# dbt
+warehouse/target/
+warehouse/dbt_packages/
+warehouse/logs/
+logs/
+.user.yml
+
+# Local env / editors
+.env
+.vscode/
+.idea/
+.DS_Store
