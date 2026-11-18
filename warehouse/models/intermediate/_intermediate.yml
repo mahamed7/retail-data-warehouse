@@ -1,0 +1,67 @@
+version: 2
+
+models:
+  - name: int_order_lines
+    description: >
+      One row per order line, joined to its deduplicated order header and to the
+      product catalogue for cost. Computes the line amounts used by every mart:
+      `gross_amount = quantity * unit_price`, `net_amount = gross_amount -
+      discount_amount`, and `cost_amount = quantity * unit_cost`. Lines whose
+      product is missing from the catalogue keep a null cost.
+    columns:
+      - name: order_item_id
+        description: Order line identifier (primary key).
+        data_tests:
+          - unique
+          - not_null
+      - name: order_id
+        description: Order the line belongs to.
+        data_tests:
+          - not_null
+      - name: customer_id
+        description: Registered customer, or null for a walk-in customer.
+      - name: is_walk_in
+        description: True when the order has no registered customer.
+      - name: store_id
+        description: Store that took the order.
+      - name: order_ts
+        description: Order timestamp.
+      - name: order_date
+        description: Calendar date of the order.
+      - name: channel
+        description: Sales channel.
+      - name: payment_method
+        description: Payment method.
+      - name: order_status
+        description: Order status (completed, cancelled, returned).
+      - name: product_id
+        description: Product id as sold; may be missing from the catalogue.
+      - name: is_known_product
+        description: True when `product_id` exists in `stg_products`.
+        data_tests:
+          - not_null
+      - name: quantity
+        description: Units sold.
+      - name: unit_price
+        description: Price per unit at time of sale, USD.
+      - name: unit_cost
+        description: Current catalogue cost per unit, USD; null for orphan products.
+      - name: gross_amount
+        description: quantity * unit_price, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: discount_amount
+        description: Line-level discount, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: net_amount
+        description: gross_amount - discount_amount, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: cost_amount
+        description: quantity * unit_cost, USD; null for orphan products.
+        data_tests:
+          - non_negative

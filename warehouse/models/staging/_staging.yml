@@ -1,0 +1,202 @@
+version: 2
+
+models:
+  - name: stg_stores
+    description: >
+      One row per store. Typed and trimmed copy of `raw.stores`; no business logic.
+    columns:
+      - name: store_id
+        description: Store identifier (primary key).
+        data_tests:
+          - unique
+          - not_null
+      - name: store_name
+        description: Store display name.
+        data_tests:
+          - not_null
+      - name: city
+        description: City the store is in.
+      - name: region
+        description: Administrative region of the city.
+      - name: store_type
+        description: Store format.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["Supermarket", "Mini-mart", "Wholesale"]
+      - name: opened_date
+        description: Date the store opened.
+
+  - name: stg_products
+    description: >
+      One row per product. Typed copy of `raw.products`; prices cast to
+      `numeric(12,2)` and `is_active` to boolean.
+    columns:
+      - name: product_id
+        description: Product identifier (primary key).
+        data_tests:
+          - unique
+          - not_null
+      - name: sku
+        description: Stock-keeping unit code, upper case.
+        data_tests:
+          - unique
+          - not_null
+      - name: product_name
+        description: Product display name.
+      - name: category
+        description: Top-level product category.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["Groceries", "Beverages", "Household", "Personal Care", "Electronics", "Fresh Produce"]
+      - name: subcategory
+        description: Subcategory within the category.
+      - name: unit_cost
+        description: Current cost price in USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: unit_price
+        description: Current list price in USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: is_active
+        description: Whether the product is still sold.
+
+  - name: stg_customers
+    description: >
+      One row per registered customer. Exact duplicate rows in `raw.customers` are
+      removed, names are converted to initial capitals, and emails are trimmed and
+      lower-cased (blank emails become null).
+    columns:
+      - name: customer_id
+        description: Customer identifier (primary key after deduplication).
+        data_tests:
+          - unique
+          - not_null
+      - name: first_name
+        description: First name in initial capitals.
+      - name: last_name
+        description: Last name in initial capitals.
+      - name: full_name
+        description: First and last name separated by a space.
+      - name: email
+        description: Trimmed, lower-case email; null when the source was blank.
+      - name: phone
+        description: Phone number in international format.
+      - name: city
+        description: Home city.
+      - name: signup_date
+        description: Date the customer registered.
+
+  - name: stg_orders
+    description: >
+      One row per order. Re-sent orders in `raw.orders` are deduplicated by keeping
+      the version with the latest `updated_at`. A null `customer_id` is a walk-in
+      customer.
+    columns:
+      - name: order_id
+        description: Order identifier (primary key after deduplication).
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Registered customer, or null for a walk-in customer.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+      - name: is_walk_in
+        description: True when the order has no registered customer.
+        data_tests:
+          - not_null
+      - name: store_id
+        description: Store that took the order.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_stores')
+                field: store_id
+      - name: order_ts
+        description: Order timestamp, local time without time zone.
+        data_tests:
+          - not_null
+      - name: order_date
+        description: Calendar date of `order_ts`.
+        data_tests:
+          - not_null
+      - name: channel
+        description: Sales channel.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["in_store", "mobile_app", "phone"]
+      - name: payment_method
+        description: How the order was paid.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["cash", "zaad", "edahab", "card"]
+      - name: order_status
+        description: Status of the winning order version (source column `status`).
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["completed", "cancelled", "returned"]
+      - name: updated_at
+        description: Last change in the source system.
+
+  - name: stg_order_items
+    description: >
+      One row per order line. Typed copy of `raw.order_items` with an empty
+      discount treated as 0. Product ids are not guaranteed to exist in
+      `stg_products` (about 0.1% are orphans).
+    columns:
+      - name: order_item_id
+        description: Order line identifier (primary key).
+        data_tests:
+          - unique
+          - not_null
+      - name: order_id
+        description: Order the line belongs to.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
+      - name: product_id
+        description: Product sold. A small share reference products missing from the catalogue.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: product_id
+              config:
+                # Documented source issue: orphans are mapped to the Unknown product downstream.
+                severity: warn
+      - name: quantity
+        description: Units sold.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: unit_price
+        description: Price per unit at time of sale, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: discount_amount
+        description: Line-level discount in USD; 0 when the source was empty.
+        data_tests:
+          - not_null
+          - non_negative

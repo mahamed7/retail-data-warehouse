@@ -1,0 +1,25 @@
+version: 2
+
+data_tests:
+  - name: assert_fct_sales_revenue_reconciles_with_staging
+    description: >
+      Completed revenue and line count in fct_sales equal the same figures
+      computed directly from stg_order_items joined to the deduplicated stg_orders.
+
+  - name: assert_order_ts_within_sales_period
+    description: >
+      No order timestamp falls outside the sales period defined in the data
+      contract (vars `sales_start_date` and `sales_end_date`).
+
+  - name: assert_discount_not_exceeding_gross
+    description: No order line has a discount larger than its gross amount.
+
+  - name: assert_no_orders_lost_between_raw_and_fct_sales
+    description: >
+      Every order id in raw.orders reaches fct_sales with exactly as many lines as
+      it has in raw.order_items; orders without lines are allowed to be absent.
+
+  - name: assert_monthly_mart_reconciles_with_fct_sales
+    description: >
+      The monthly store mart adds up to fct_sales for completed revenue and total
+      order count.

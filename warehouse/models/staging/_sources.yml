@@ -1,0 +1,135 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Nightly point-of-sale extracts for Dukaan Retail, landed as-is by the Python
+      loader in `pipeline/`. Every source column is `text` so the load never fails
+      on bad data; typing and cleaning happen in the staging layer. Each table is a
+      full refresh (dropped and recreated in one transaction). See
+      `docs/data-contract.md` for the agreement between loader and warehouse.
+    schema: raw
+    config:
+      loaded_at_field: _loaded_at
+      freshness:
+        warn_after: {count: 24, period: hour}
+        error_after: {count: 48, period: hour}
+
+    tables:
+      - name: stores
+        description: One row per store (about 8). Store ids are unique.
+        columns:
+          - name: store_id
+            description: Store identifier, integer as text.
+          - name: store_name
+            description: Display name, for example `Dukaan Hargeisa Central`.
+          - name: city
+            description: City the store is in.
+          - name: region
+            description: Administrative region of the city.
+          - name: store_type
+            description: "`Supermarket`, `Mini-mart` or `Wholesale`."
+          - name: opened_date
+            description: Opening date, `YYYY-MM-DD`; always before the sales period.
+          - name: _source_file
+            description: CSV file the row was loaded from.
+          - name: _loaded_at
+            description: Time the loader wrote the row.
+
+      - name: products
+        description: Product catalogue (about 120 rows) with current cost and list price.
+        columns:
+          - name: product_id
+            description: Product identifier, integer as text.
+          - name: sku
+            description: Stock-keeping unit code, unique.
+          - name: product_name
+            description: Product display name.
+          - name: category
+            description: Top-level category (Groceries, Beverages, Household, Personal Care, Electronics, Fresh Produce).
+          - name: subcategory
+            description: Subcategory within the category.
+          - name: unit_cost
+            description: Current cost price in USD.
+          - name: unit_price
+            description: Current list price in USD; always greater than unit_cost.
+          - name: is_active
+            description: "`true` or `false`."
+          - name: _source_file
+            description: CSV file the row was loaded from.
+          - name: _loaded_at
+            description: Time the loader wrote the row.
+
+      - name: customers
+        description: >
+          Registered customers (about 2,000 distinct). Known issue: about 2% of rows
+          are exact duplicates of another row. Name casing and email formatting are
+          inconsistent.
+        columns:
+          - name: customer_id
+            description: Customer identifier, integer as text. Not unique in raw because of duplicates.
+          - name: first_name
+            description: First name with inconsistent casing.
+          - name: last_name
+            description: Last name with inconsistent casing.
+          - name: email
+            description: Email; may have surrounding whitespace or uppercase, about 3% empty.
+          - name: phone
+            description: Phone number in international format.
+          - name: city
+            description: Home city.
+          - name: signup_date
+            description: Date the customer registered, `YYYY-MM-DD`.
+          - name: _source_file
+            description: CSV file the row was loaded from.
+          - name: _loaded_at
+            description: Time the loader wrote the row.
+
+      - name: orders
+        description: >
+          Order headers (about 25,000 distinct). Known issue: about 1% of order ids
+          appear twice because the source re-sent the order after a status change;
+          the row with the latest `updated_at` wins.
+        columns:
+          - name: order_id
+            description: Order identifier, integer as text. Not unique in raw because of re-sends.
+          - name: customer_id
+            description: Customer identifier; empty (NULL) means a walk-in customer (about 30% of orders).
+          - name: store_id
+            description: Store that took the order; always a valid store.
+          - name: order_ts
+            description: Order timestamp, ISO 8601 local time without time zone.
+          - name: channel
+            description: "`in_store`, `mobile_app` or `phone`."
+          - name: payment_method
+            description: "`cash`, `zaad`, `edahab` or `card`."
+          - name: status
+            description: "`completed`, `cancelled` or `returned`."
+          - name: updated_at
+            description: Last change in the source system; used to pick the winning row for re-sent orders.
+          - name: _source_file
+            description: CSV file the row was loaded from.
+          - name: _loaded_at
+            description: Time the loader wrote the row.
+
+      - name: order_items
+        description: >
+          Order lines (about 60,000). Known issue: about 0.1% reference a product id
+          missing from the product catalogue.
+        columns:
+          - name: order_item_id
+            description: Order line identifier, integer as text, unique.
+          - name: order_id
+            description: Order the line belongs to; always present in orders.
+          - name: product_id
+            description: Product sold; may reference a product missing from products.
+          - name: quantity
+            description: Units sold, integer of at least 1.
+          - name: unit_price
+            description: Price per unit at time of sale (may differ from today's list price).
+          - name: discount_amount
+            description: Line-level discount in USD; empty means 0; never more than quantity times unit_price.
+          - name: _source_file
+            description: CSV file the row was loaded from.
+          - name: _loaded_at
+            description: Time the loader wrote the row.

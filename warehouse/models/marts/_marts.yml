@@ -1,0 +1,414 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: >
+      Calendar dimension. Grain: one row per calendar day of the sales period
+      (2024-01-01 to 2025-12-31, set by the `sales_start_date` / `sales_end_date`
+      vars). The local business week runs Saturday to Friday, and Friday, the
+      main weekly day off in Somaliland, is the only weekend day.
+    columns:
+      - name: date_key
+        description: Surrogate key as an integer in YYYYMMDD form (primary key).
+        data_tests:
+          - unique
+          - not_null
+      - name: full_date
+        description: The calendar date.
+        data_tests:
+          - unique
+          - not_null
+      - name: day_name
+        description: Full English day name, for example `Friday`.
+      - name: day_name_short
+        description: Three-letter day name, for example `Fri`.
+      - name: day_of_week
+        description: Day number in the local business week, Saturday = 1 through Friday = 7.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7]
+                quote: false
+      - name: iso_day_of_week
+        description: ISO 8601 day number, Monday = 1 through Sunday = 7.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7]
+                quote: false
+      - name: is_weekend
+        description: True on Fridays, the weekly day off in Somaliland.
+        data_tests:
+          - not_null
+      - name: day_of_month
+        description: Day of the month, 1 to 31.
+      - name: day_of_year
+        description: Day of the year, 1 to 366.
+      - name: iso_week
+        description: ISO 8601 week number.
+      - name: month
+        description: Month number, 1 to 12.
+      - name: month_name
+        description: Full English month name, for example `March`.
+      - name: month_name_short
+        description: Three-letter month name, for example `Mar`.
+      - name: month_start_date
+        description: First day of the month; convenient for monthly grouping and joins.
+      - name: quarter
+        description: Calendar quarter, 1 to 4.
+      - name: year
+        description: Calendar year.
+      - name: year_month
+        description: Year and month as text, `YYYY-MM`.
+
+  - name: dim_store
+    description: >
+      Store dimension. Grain: one row per store. Type 1 (current attributes only);
+      `store_key` equals the source `store_id`.
+    columns:
+      - name: store_key
+        description: Dimension key (primary key); equal to `store_id`.
+        data_tests:
+          - unique
+          - not_null
+      - name: store_id
+        description: Source store identifier.
+        data_tests:
+          - unique
+          - not_null
+      - name: store_name
+        description: Store display name.
+      - name: city
+        description: City the store is in.
+      - name: region
+        description: Administrative region of the city.
+      - name: store_type
+        description: Store format.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["Supermarket", "Mini-mart", "Wholesale"]
+      - name: opened_date
+        description: Date the store opened.
+
+  - name: dim_product
+    description: >
+      Product dimension. Grain: one row per catalogue product, plus one
+      "Unknown product" member (`product_key = -1`) that order lines with a
+      product id missing from the catalogue point to. Type 1; `product_key`
+      equals the source `product_id` for catalogue products.
+    columns:
+      - name: product_key
+        description: Dimension key (primary key); equal to `product_id`, or -1 for the Unknown product.
+        data_tests:
+          - unique
+          - not_null
+      - name: product_id
+        description: Source product identifier; null for the Unknown product.
+        data_tests:
+          - unique
+      - name: sku
+        description: Stock-keeping unit code; `UNKNOWN` for the Unknown product.
+        data_tests:
+          - unique
+          - not_null
+      - name: product_name
+        description: Product display name.
+        data_tests:
+          - not_null
+      - name: category
+        description: Top-level category; `Unknown` for the Unknown product.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["Groceries", "Beverages", "Household", "Personal Care", "Electronics", "Fresh Produce", "Unknown"]
+      - name: subcategory
+        description: Subcategory within the category.
+      - name: unit_cost
+        description: Current cost price in USD.
+        data_tests:
+          - non_negative
+      - name: unit_price
+        description: Current list price in USD.
+        data_tests:
+          - non_negative
+      - name: list_margin
+        description: unit_price - unit_cost at current catalogue prices, USD.
+        data_tests:
+          - non_negative
+      - name: is_active
+        description: Whether the product is still sold.
+      - name: is_unknown_member
+        description: True only for the Unknown product row.
+        data_tests:
+          - not_null
+
+  - name: dim_customer
+    description: >
+      Customer dimension. Grain: one row per registered customer, plus one
+      "Walk-in customer" member (`customer_key = -1`) shared by every order
+      without a customer. Purchase history (first and last order date, lifetime
+      orders and revenue) counts completed orders only. `customer_segment` is
+      based on lifetime completed orders: 0 = No purchases, 1 = New, 2 to 9 =
+      Returning, 10 or more = Loyal (thresholds are the `returning_min_orders`
+      and `loyal_min_orders` vars).
+    columns:
+      - name: customer_key
+        description: Dimension key (primary key); equal to `customer_id`, or -1 for walk-ins.
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Source customer identifier; null for the walk-in member.
+        data_tests:
+          - unique
+      - name: first_name
+        description: First name in initial capitals.
+      - name: last_name
+        description: Last name in initial capitals.
+      - name: full_name
+        description: First and last name; `Walk-in customer` for the walk-in member.
+        data_tests:
+          - not_null
+      - name: email
+        description: Trimmed, lower-case email; null when unknown.
+      - name: phone
+        description: Phone number in international format.
+      - name: city
+        description: Home city.
+      - name: signup_date
+        description: Date the customer registered.
+      - name: first_order_date
+        description: Date of the first completed order; null if none.
+      - name: last_order_date
+        description: Date of the most recent completed order; null if none.
+      - name: lifetime_orders
+        description: Number of completed orders.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: lifetime_revenue
+        description: Net revenue from completed orders, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: customer_segment
+        description: Segment by lifetime completed orders (Walk-in, No purchases, New, Returning, Loyal).
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["Walk-in", "No purchases", "New", "Returning", "Loyal"]
+      - name: is_walk_in
+        description: True only for the walk-in member.
+        data_tests:
+          - not_null
+
+  - name: fct_sales
+    description: >
+      Sales fact table. Grain: one row per order line (`order_item_id`), using the
+      latest version of each order. Cancelled and returned orders are kept so
+      that status analysis is possible; filter on `is_revenue` (completed orders
+      only) for revenue and margin. Lines for products missing from the catalogue
+      point to the Unknown product (-1) and have a null cost and margin; walk-in
+      orders point to the Walk-in customer (-1).
+    columns:
+      - name: order_item_id
+        description: Order line identifier (primary key).
+        data_tests:
+          - unique
+          - not_null
+      - name: order_id
+        description: Order identifier (degenerate dimension).
+        data_tests:
+          - not_null
+      - name: date_key
+        description: Order date as YYYYMMDD; foreign key to `dim_date`.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: store_key
+        description: Foreign key to `dim_store`.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_store')
+                field: store_key
+      - name: product_key
+        description: Foreign key to `dim_product`; -1 when the product is missing from the catalogue.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_product')
+                field: product_key
+      - name: customer_key
+        description: Foreign key to `dim_customer`; -1 for walk-in customers.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_key
+      - name: source_product_id
+        description: Product id as sold, kept so orphan product ids can be investigated.
+        data_tests:
+          - not_null
+      - name: order_ts
+        description: Order timestamp, local time.
+        data_tests:
+          - not_null
+      - name: channel
+        description: Sales channel.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["in_store", "mobile_app", "phone"]
+      - name: payment_method
+        description: Payment method.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["cash", "zaad", "edahab", "card"]
+      - name: order_status
+        description: Status of the order.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["completed", "cancelled", "returned"]
+      - name: is_revenue
+        description: True when the order is completed; only these lines count as revenue.
+        data_tests:
+          - not_null
+      - name: is_walk_in
+        description: True when the order has no registered customer.
+        data_tests:
+          - not_null
+      - name: quantity
+        description: Units sold.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: unit_price
+        description: Price per unit at time of sale, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: gross_amount
+        description: quantity * unit_price, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: discount_amount
+        description: Line-level discount, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: net_amount
+        description: gross_amount - discount_amount, USD. Revenue when `is_revenue`.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: cost_amount
+        description: quantity * current unit_cost, USD; null for unknown products.
+        data_tests:
+          - non_negative
+      - name: gross_margin
+        description: net_amount - cost_amount, USD; null for unknown products. Can be negative on heavily discounted lines.
+
+  - name: mart_monthly_store_performance
+    description: >
+      Store performance report. Grain: one row per store per calendar month of the
+      sales period, including months with no sales. Order counts include every
+      order with at least one line; revenue, margin, units and average order value
+      count completed orders only.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ["store_key", "month_start_date"]
+    columns:
+      - name: store_key
+        description: Foreign key to `dim_store`.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_store')
+                field: store_key
+      - name: store_name
+        description: Store display name.
+      - name: city
+        description: City the store is in.
+      - name: region
+        description: Administrative region of the city.
+      - name: store_type
+        description: Store format.
+      - name: month_start_date
+        description: First day of the month.
+        data_tests:
+          - not_null
+      - name: year_month
+        description: Month as `YYYY-MM`.
+        data_tests:
+          - not_null
+      - name: year
+        description: Calendar year.
+      - name: month
+        description: Month number, 1 to 12.
+      - name: total_orders
+        description: Orders of any status.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: completed_orders
+        description: Completed orders.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: cancelled_orders
+        description: Cancelled orders.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: returned_orders
+        description: Returned orders.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: units_sold
+        description: Units on completed orders.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: revenue
+        description: Net amount of completed orders, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: gross_margin
+        description: Revenue minus cost on completed orders with a known product cost, USD.
+        data_tests:
+          - not_null
+      - name: margin_pct
+        description: >
+          gross_margin / revenue as a fraction (0.25 = 25%), using only revenue from
+          lines with a known cost so orphan products do not skew it. Null when there is
+          no revenue.
+      - name: avg_order_value
+        description: revenue / completed_orders, USD. Null when there are no completed orders.
+      - name: returned_rate
+        description: >
+          returned_orders / (completed_orders + returned_orders) as a fraction:
+          the share of fulfilled orders that came back. Cancelled orders are excluded
+          because they were never fulfilled. Null when the denominator is 0.

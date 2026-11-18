@@ -1,0 +1,15 @@
+# Connection profile for the retail_dw project. Safe to commit: every value comes
+# from the standard libpq environment variables, with local-dev defaults that match
+# docs/data-contract.md. Run dbt from this folder with `--profiles-dir .`.
+retail_dw:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('PGHOST', 'localhost') }}"
+      port: "{{ env_var('PGPORT', '5432') | as_number }}"
+      user: "{{ env_var('PGUSER', 'postgres') }}"
+      password: "{{ env_var('PGPASSWORD', 'postgres') }}"
+      dbname: "{{ env_var('PGDATABASE', 'retail') }}"
+      schema: public
+      threads: 4
