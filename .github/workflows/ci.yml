@@ -59,6 +59,9 @@ jobs:
       - name: Load - land CSVs in the raw schema
         run: python pipeline/load_raw.py
 
+      - name: Quality gate - validate raw before dbt
+        run: python pipeline/check_raw.py
+
       - name: Check source freshness
         working-directory: warehouse
         run: dbt source freshness --profiles-dir .
@@ -89,6 +92,7 @@ jobs:
         run: |
           psql -d retail -c "create database retail_history;"
           python pipeline/load_raw.py --mode append --backfill 2024-01-01 2026-01-14 2>&1 | tail -3
+          python pipeline/check_raw.py --all
           (cd warehouse && dbt build --profiles-dir .)
 
       - name: Both paths agree on revenue; history changes only cost
@@ -190,6 +194,7 @@ jobs:
           while [ "$(date -d "$day" +%s)" -le "$(date -d "$WINDOW_END" +%s)" ]; do
             echo "::group::run date $day"
             python pipeline/load_raw.py --mode append --run-date "$day"
+            python pipeline/check_raw.py --run-date "$day"
             (cd warehouse && dbt build --profiles-dir . --vars "$DBT_VARS")
             echo "::endgroup::"
             day="$(date -d "$day + 1 day" +%F)"
@@ -199,6 +204,27 @@ jobs:
         run: |
           psql -c "select _run_date, count(*) as order_rows
                    from raw.orders group by _run_date order by _run_date;"
+
+      # Corrupt the replay day in raw the way a broken export would, and prove the gate
+      # rejects it. The replay below reloads the day, which restores the good data.
+      - name: Quality gate rejects a corrupted batch
+        run: |
+          psql -c "update raw.orders set status = 'shipped'
+                   where _run_date = '$REPLAY_DAY'
+                     and order_id = (select min(order_id) from raw.orders where _run_date = '$REPLAY_DAY');"
+          psql -c "update raw.order_items set quantity = 'two'
+                   where _run_date = '$REPLAY_DAY'
+                     and order_item_id = (select min(order_item_id) from raw.order_items where _run_date = '$REPLAY_DAY');"
+          set +e
+          python pipeline/check_raw.py --run-date "$REPLAY_DAY"
+          code=$?
+          set -e
+          echo "gate exit code on corrupted batch: $code"
+          test "$code" = "1"
+          python -c "import json; r = json.load(open('reports/quality/$REPLAY_DAY.json'));
+          failed = sorted(c['check_id'] for c in r['checks'] if c['status'] == 'fail');
+          print('failed checks:', failed);
+          assert failed == ['order_items.quantity_positive_integer', 'orders.status_in_contract'], failed"
 
       - name: Replay one day and prove nothing is duplicated
         run: |
@@ -212,6 +238,7 @@ jobs:
           }
           before="$(snapshot)"
           python pipeline/load_raw.py --mode append --run-date "$REPLAY_DAY"
+          python pipeline/check_raw.py --run-date "$REPLAY_DAY"
           (cd warehouse && dbt build --profiles-dir . --vars "$DBT_VARS")
           after="$(snapshot)"
           echo "before replay: $before"
@@ -249,6 +276,18 @@ jobs:
           echo "incremental:  $incremental"
           echo "full rebuild: $rebuilt"
           test "$incremental" = "$rebuilt"
+
+      - name: Quality gate history
+        if: always()
+        run: |
+          psql -c "select scope, status, count(*) as checks, sum(failing_rows) as bad_rows
+                   from raw._quality_results group by scope, status order by scope, status;"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-reports
+          path: reports/quality/
 
   # ---------------------------------------------------------------------------
   # Airflow: the DAG parses, has the right shape, and its commands render
