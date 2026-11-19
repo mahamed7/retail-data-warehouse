@@ -121,6 +121,18 @@ A day's batch is a slice of the **same** deterministic dataset as the full extra
 Same columns and quality issues as the full extract. An empty day still writes all five
 files (header only where there are no rows).
 
+Making a single day self-contained:
+
+- `--run-date D --include-history` also writes every customer who signed up **before** `D`.
+  Use it for the first day loaded into an empty warehouse. Airflow adds it automatically on
+  the DAG's first successful run.
+- The batch for **2024-01-01**, the first day of sales, always carries the earlier signups.
+  The same applies to the first day of a `--backfill`.
+- Late cancellations and returns push `updated_at` past the sales period, so batches continue
+  until **2026-01-14**. The union of every batch from 2024-01-01 to 2026-01-14 equals the full
+  extract row for row.
+- `--include-history` only works with `--run-date`.
+
 ### Loader
 
 | Command | Behaviour |

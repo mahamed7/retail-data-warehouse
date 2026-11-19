@@ -3,7 +3,8 @@ version: 2
 models:
   - name: stg_stores
     description: >
-      One row per store. Typed and trimmed copy of `raw.stores`; no business logic.
+      One row per store. Typed and trimmed copy of `raw.stores`; when several daily
+      snapshots are loaded, the latest one (by `_run_date`, then `_loaded_at`) wins.
     columns:
       - name: store_id
         description: Store identifier (primary key).
@@ -31,7 +32,8 @@ models:
   - name: stg_products
     description: >
       One row per product. Typed copy of `raw.products`; prices cast to
-      `numeric(12,2)` and `is_active` to boolean.
+      `numeric(12,2)` and `is_active` to boolean. When several daily snapshots are
+      loaded, the latest one (by `_run_date`, then `_loaded_at`) wins.
     columns:
       - name: product_id
         description: Product identifier (primary key).

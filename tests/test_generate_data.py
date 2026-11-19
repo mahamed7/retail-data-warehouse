@@ -271,7 +271,7 @@ def test_build_create_table_types_every_column_as_text() -> None:
     statement = load_raw.build_create_table("orders", ["order_id", "status"]).as_string()
     assert statement == (
         'CREATE TABLE "raw"."orders" ("order_id" text, "status" text, '
-        '"_source_file" text NOT NULL, "_loaded_at" timestamptz NOT NULL)'
+        '"_source_file" text NOT NULL, "_loaded_at" timestamptz NOT NULL, "_run_date" date)'
     )
 
 

@@ -5,8 +5,9 @@ sources:
     description: >
       Nightly point-of-sale extracts for Dukaan Retail, landed as-is by the Python
       loader in `pipeline/`. Every source column is `text` so the load never fails
-      on bad data; typing and cleaning happen in the staging layer. Each table is a
-      full refresh (dropped and recreated in one transaction). See
+      on bad data; typing and cleaning happen in the staging layer. A full load
+      drops and recreates each table in one transaction (`_run_date` is null); an
+      append load replaces one daily batch, identified by `_run_date`. See
       `docs/data-contract.md` for the agreement between loader and warehouse.
     schema: raw
     config:
@@ -17,7 +18,9 @@ sources:
 
     tables:
       - name: stores
-        description: One row per store (about 8). Store ids are unique.
+        description: >
+          Stores (about 8). Store ids are unique within one extract; a daily batch
+          holds a full snapshot, so a store appears once per loaded batch.
         columns:
           - name: store_id
             description: Store identifier, integer as text.
@@ -35,9 +38,14 @@ sources:
             description: CSV file the row was loaded from.
           - name: _loaded_at
             description: Time the loader wrote the row.
+          - name: _run_date
+            description: Day of the daily batch the row came from; null for a full-refresh load.
 
       - name: products
-        description: Product catalogue (about 120 rows) with current cost and list price.
+        description: >
+          Product catalogue (about 120 products) with cost and list price. A daily
+          batch holds a full snapshot as of its `_run_date`, so a product appears
+          once per loaded batch.
         columns:
           - name: product_id
             description: Product identifier, integer as text.
@@ -59,6 +67,8 @@ sources:
             description: CSV file the row was loaded from.
           - name: _loaded_at
             description: Time the loader wrote the row.
+          - name: _run_date
+            description: Day of the daily batch the row came from; null for a full-refresh load.
 
       - name: customers
         description: >
@@ -84,6 +94,8 @@ sources:
             description: CSV file the row was loaded from.
           - name: _loaded_at
             description: Time the loader wrote the row.
+          - name: _run_date
+            description: Day of the daily batch the row came from; null for a full-refresh load.
 
       - name: orders
         description: >
@@ -111,6 +123,8 @@ sources:
             description: CSV file the row was loaded from.
           - name: _loaded_at
             description: Time the loader wrote the row.
+          - name: _run_date
+            description: Day of the daily batch the row came from; null for a full-refresh load.
 
       - name: order_items
         description: >
@@ -133,3 +147,5 @@ sources:
             description: CSV file the row was loaded from.
           - name: _loaded_at
             description: Time the loader wrote the row.
+          - name: _run_date
+            description: Day of the daily batch the row came from; null for a full-refresh load.

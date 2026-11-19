@@ -19,9 +19,25 @@ has real cleaning work to do:
 * order_items: ~0.1% of lines reference a product missing from products.csv,
   ``discount_amount`` left empty when there is no discount.
 
+Besides the full extract (v1), the script can write **daily batches** (v2, see
+"Daily batches" in the contract). A batch is a slice of the same in-memory
+dataset, so the union of all daily batches reproduces the full extract:
+
+* orders: every row whose ``updated_at`` date is the batch day, so a re-sent
+  order's stale version and its later version land in different batches;
+* order_items: the lines of orders whose first export is on the batch day;
+* customers: customers who signed up on the batch day. The first batch of a
+  backfill, a batch with ``--include-history`` and the batch for the first day
+  of the sales period also carry everyone who signed up earlier, so they are
+  self-contained;
+* products and stores: full snapshots, with prices, costs and the active flag
+  as they were on the batch day.
+
 Usage::
 
     python pipeline/generate_data.py [--out data/raw]
+    python pipeline/generate_data.py --run-date 2025-07-01 [--include-history] [--out data/raw]
+    python pipeline/generate_data.py --backfill 2025-06-28 2025-07-03 [--out data/raw]
 """
 
 from __future__ import annotations
@@ -71,6 +87,12 @@ ORDER_COLUMNS = (
 ORDER_ITEM_COLUMNS = (
     "order_item_id", "order_id", "product_id", "quantity", "unit_price", "discount_amount",
 )
+
+# Columns the daily batches are sliced on
+CUSTOMER_SIGNUP_INDEX = CUSTOMER_COLUMNS.index("signup_date")
+ORDER_ID_INDEX = ORDER_COLUMNS.index("order_id")
+ORDER_UPDATED_AT_INDEX = ORDER_COLUMNS.index("updated_at")
+ITEM_ORDER_ID_INDEX = ORDER_ITEM_COLUMNS.index("order_id")
 
 # --------------------------------------------------------------------------- #
 # Injected data quality issues
@@ -339,9 +361,20 @@ class Product:
 
     def price_on(self, day: date) -> int:
         """Return the shelf price in cents on ``day`` (before or after the 2025 increase)."""
+        return self._as_of(day, self.unit_price_cents)
+
+    def cost_on(self, day: date) -> int:
+        """Return the cost price in cents on ``day``; suppliers raised costs with the prices."""
+        return self._as_of(day, self.unit_cost_cents)
+
+    def active_on(self, day: date) -> bool:
+        """Discontinued products were still on sale until DISCONTINUED_FROM."""
+        return self.is_active or day < DISCONTINUED_FROM
+
+    def _as_of(self, day: date, current_cents: int) -> int:
         if day >= PRICE_INCREASE_DATE or self.category in PRICE_INCREASE_EXEMPT:
-            return self.unit_price_cents
-        return round(self.unit_price_cents * 100 / (100 + PRICE_INCREASE_PCT))
+            return current_cents
+        return round(current_cents * 100 / (100 + PRICE_INCREASE_PCT))
 
 
 @dataclass(frozen=True)
@@ -458,10 +491,20 @@ def build_products(rng: random.Random) -> list[Product]:
 
 
 def product_row(product: Product) -> list[str]:
+    """Render a product with its current cost, price and active flag (the full extract)."""
     return [
         str(product.product_id), product.sku, product.name, product.category,
         product.subcategory, format_money(product.unit_cost_cents),
         format_money(product.unit_price_cents), "true" if product.is_active else "false",
+    ]
+
+
+def product_row_on(product: Product, day: date) -> list[str]:
+    """Render a product as the catalogue showed it on ``day`` (a daily snapshot)."""
+    return [
+        str(product.product_id), product.sku, product.name, product.category,
+        product.subcategory, format_money(product.cost_on(day)),
+        format_money(product.price_on(day)), "true" if product.active_on(day) else "false",
     ]
 
 
@@ -723,9 +766,127 @@ def order_item_rows(rng: random.Random, orders: list[Order], products: list[Prod
 
 
 # --------------------------------------------------------------------------- #
+# The dataset: one in-memory build serves the full extract and every daily batch
+# --------------------------------------------------------------------------- #
+Rows = list[list[str]]
+Batch = dict[str, tuple[Sequence[str], Rows]]  # file name -> (header, data rows)
+
+
+@dataclass(frozen=True)
+class Dataset:
+    """Everything one seeded run produces; CSV rows are in full-extract file order."""
+
+    stores: list[Store]
+    products: list[Product]
+    customer_rows: Rows
+    order_rows: Rows
+    order_item_rows: Rows
+
+
+def build_dataset(seed: int = SEED) -> Dataset:
+    """Make every random draw in the v1 order, so the full extract stays byte-identical."""
+    rng = random.Random(seed)
+    stores = build_stores()
+    products = build_products(rng)
+    customers = build_customers(rng, stores)
+    orders = build_orders(rng, stores, customers)
+    # The three renderers also draw from ``rng``: keep this order.
+    rendered_customers = customer_rows(rng, customers)
+    rendered_orders = order_rows(rng, orders)
+    rendered_order_items = order_item_rows(rng, orders, products)
+    return Dataset(stores, products, rendered_customers, rendered_orders, rendered_order_items)
+
+
+def full_extract(dataset: Dataset) -> Batch:
+    """The v1 nightly extract: the current catalogue and every row ever exported."""
+    return {
+        "stores.csv": (STORE_COLUMNS, [store_row(store) for store in dataset.stores]),
+        "products.csv": (PRODUCT_COLUMNS, [product_row(product) for product in dataset.products]),
+        "customers.csv": (CUSTOMER_COLUMNS, dataset.customer_rows),
+        "orders.csv": (ORDER_COLUMNS, dataset.order_rows),
+        "order_items.csv": (ORDER_ITEM_COLUMNS, dataset.order_item_rows),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Daily batches
+# --------------------------------------------------------------------------- #
+def row_date(value: str) -> date:
+    """Calendar date of an ISO date or timestamp value, e.g. '2025-07-01T09:15:00'."""
+    return date.fromisoformat(value[:10])
+
+
+def group_by_day(rows: Rows, day_of: Callable[[list[str]], date]) -> dict[date, Rows]:
+    """Bucket rows by day, keeping their original order inside each bucket."""
+    groups: dict[date, Rows] = {}
+    for row in rows:
+        groups.setdefault(day_of(row), []).append(row)
+    return groups
+
+
+def first_export_days(rendered_orders: Rows) -> dict[str, date]:
+    """Day each order was first exported: the earliest ``updated_at`` among its versions."""
+    first: dict[str, date] = {}
+    for row in rendered_orders:
+        order_id, day = row[ORDER_ID_INDEX], row_date(row[ORDER_UPDATED_AT_INDEX])
+        if order_id not in first or day < first[order_id]:
+            first[order_id] = day
+    return first
+
+
+def days_between(start: date, end: date) -> list[date]:
+    """Every calendar day from ``start`` to ``end``, inclusive."""
+    return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+
+
+class DailySlicer:
+    """Cut a Dataset into the daily batches of the data contract.
+
+    Rows are bucketed by day once, so slicing many days costs little more than
+    slicing one. Inside a batch, rows keep their full-extract order.
+    """
+
+    def __init__(self, dataset: Dataset) -> None:
+        self._dataset = dataset
+        first_export = first_export_days(dataset.order_rows)
+        self._customers = group_by_day(
+            dataset.customer_rows, lambda row: row_date(row[CUSTOMER_SIGNUP_INDEX])
+        )
+        self._orders = group_by_day(
+            dataset.order_rows, lambda row: row_date(row[ORDER_UPDATED_AT_INDEX])
+        )
+        self._order_items = group_by_day(
+            dataset.order_item_rows, lambda row: first_export[row[ITEM_ORDER_ID_INDEX]]
+        )
+
+    @property
+    def last_export_day(self) -> date:
+        """Latest ``updated_at`` day; late returns push it past the end of the sales period."""
+        return max(self._orders)
+
+    def customers_for(self, day: date, include_history: bool) -> Rows:
+        """Signups of ``day``; with history (or on the first day of sales) also earlier ones."""
+        if include_history or day == PERIOD_START:
+            return [row for row in self._dataset.customer_rows
+                    if row_date(row[CUSTOMER_SIGNUP_INDEX]) <= day]
+        return list(self._customers.get(day, []))
+
+    def batch(self, day: date, include_history: bool = False) -> Batch:
+        """The export for ``day``, with snapshots of stores and products as of that day."""
+        products = [product_row_on(product, day) for product in self._dataset.products]
+        return {
+            "stores.csv": (STORE_COLUMNS, [store_row(store) for store in self._dataset.stores]),
+            "products.csv": (PRODUCT_COLUMNS, products),
+            "customers.csv": (CUSTOMER_COLUMNS, self.customers_for(day, include_history)),
+            "orders.csv": (ORDER_COLUMNS, list(self._orders.get(day, []))),
+            "order_items.csv": (ORDER_ITEM_COLUMNS, list(self._order_items.get(day, []))),
+        }
+
+
+# --------------------------------------------------------------------------- #
 # Output
 # --------------------------------------------------------------------------- #
-def write_csv(path: Path, header: Sequence[str], rows: list[list[str]]) -> int:
+def write_csv(path: Path, header: Sequence[str], rows: Rows) -> int:
     """Write a UTF-8, comma-separated file with a header row; return the data row count."""
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
@@ -734,40 +895,101 @@ def write_csv(path: Path, header: Sequence[str], rows: list[list[str]]) -> int:
     return len(rows)
 
 
-def generate(out_dir: Path, seed: int = SEED) -> dict[str, int]:
-    """Generate all five extracts into ``out_dir``; return data rows per file name."""
-    rng = random.Random(seed)
-    stores = build_stores()
-    products = build_products(rng)
-    customers = build_customers(rng, stores)
-    orders = build_orders(rng, stores, customers)
-
-    files = {
-        "stores.csv": (STORE_COLUMNS, [store_row(store) for store in stores]),
-        "products.csv": (PRODUCT_COLUMNS, [product_row(product) for product in products]),
-        "customers.csv": (CUSTOMER_COLUMNS, customer_rows(rng, customers)),
-        "orders.csv": (ORDER_COLUMNS, order_rows(rng, orders)),
-        "order_items.csv": (ORDER_ITEM_COLUMNS, order_item_rows(rng, orders, products)),
-    }
+def write_batch(out_dir: Path, files: Batch) -> dict[str, int]:
+    """Write every file of a batch into ``out_dir``; return data rows per file name."""
     out_dir.mkdir(parents=True, exist_ok=True)
     return {name: write_csv(out_dir / name, header, rows) for name, (header, rows) in files.items()}
+
+
+def batch_dir(out_dir: Path, day: date) -> Path:
+    """Folder of one daily batch, e.g. ``data/raw/2025-07-01``."""
+    return out_dir / day.isoformat()
+
+
+def generate(out_dir: Path, seed: int = SEED) -> dict[str, int]:
+    """Generate the full extract (all five files) into ``out_dir``; return data rows per file."""
+    return write_batch(out_dir, full_extract(build_dataset(seed)))
+
+
+def generate_daily(
+    out_dir: Path, start: date, end: date, seed: int = SEED, include_history: bool = True,
+) -> dict[date, dict[str, int]]:
+    """Write one batch folder per day from ``start`` to ``end`` inclusive.
+
+    The dataset is built once and sliced per day. With ``include_history`` (the
+    default: a backfill must be self-contained) the first batch also carries every
+    customer who signed up before ``start``. Returns data rows per file per day.
+    """
+    slicer = DailySlicer(build_dataset(seed))
+    counts: dict[date, dict[str, int]] = {}
+    for day in days_between(start, end):
+        files = slicer.batch(day, include_history=include_history and day == start)
+        counts[day] = write_batch(batch_dir(out_dir, day), files)
+    return counts
+
+
+# --------------------------------------------------------------------------- #
+# Command line
+# --------------------------------------------------------------------------- #
+def iso_date(value: str) -> date:
+    """argparse type for a ``YYYY-MM-DD`` date."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a YYYY-MM-DD date, got {value!r}") from None
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate Dukaan Retail's synthetic CSV extracts.")
     parser.add_argument(
         "--out", type=Path, default=DEFAULT_OUT_DIR,
-        help="output directory (default: data/raw in the repository)",
+        help="output directory (default: data/raw in the repository); "
+             "daily batches go to <out>/YYYY-MM-DD/",
     )
-    return parser.parse_args(argv)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--run-date", type=iso_date, metavar="D",
+        help="write only the daily batch for day D",
+    )
+    mode.add_argument(
+        "--backfill", type=iso_date, nargs=2, metavar=("START", "END"),
+        help="write one daily batch per day from START to END, inclusive",
+    )
+    parser.add_argument(
+        "--include-history", action="store_true",
+        help="with --run-date: also include the customers who signed up before D "
+             "(the first batch of a backfill always does)",
+    )
+    args = parser.parse_args(argv)
+    if args.backfill and args.backfill[0] > args.backfill[1]:
+        parser.error("--backfill START must not be after END")
+    if args.include_history and args.run_date is None:
+        parser.error("--include-history only applies to --run-date")
+    return args
+
+
+def print_counts(counts: Mapping[str, int]) -> None:
+    for name, count in counts.items():
+        print(f"{name:<16} {count:>7,} rows")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    counts = generate(args.out)
-    for name, count in counts.items():
-        print(f"{name:<16} {count:>7,} rows")
-    print(f"Wrote {len(counts)} files to {args.out}")
+    if args.run_date is not None:
+        day = args.run_date
+        counts = generate_daily(args.out, day, day, include_history=args.include_history)[day]
+        print_counts(counts)
+        print(f"Wrote {len(counts)} files to {batch_dir(args.out, day)}")
+    elif args.backfill is not None:
+        start, end = args.backfill
+        per_day = generate_daily(args.out, start, end)
+        for day, counts in per_day.items():
+            print(day.isoformat(), "  ".join(f"{name} {count:,}" for name, count in counts.items()))
+        print(f"Wrote {len(per_day)} daily batches to {args.out}")
+    else:
+        counts = generate(args.out)
+        print_counts(counts)
+        print(f"Wrote {len(counts)} files to {args.out}")
     return 0
 
 
