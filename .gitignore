@@ -21,3 +21,6 @@ logs/
 .vscode/
 .idea/
 .DS_Store
+
+# Quality gate reports
+reports/
