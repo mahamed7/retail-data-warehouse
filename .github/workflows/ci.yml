@@ -200,7 +200,10 @@ jobs:
       - name: Install Airflow 2.10.5 with the official constraints
         run: pip install -r orchestration/requirements-airflow.txt
 
-      - name: Test the DAG
+      - name: Initialise Airflow's metadata database (SQLite)
         run: |
-          export AIRFLOW_HOME="$RUNNER_TEMP/airflow"
-          pytest orchestration/tests -q -rs
+          echo "AIRFLOW_HOME=$RUNNER_TEMP/airflow" >> "$GITHUB_ENV"
+          AIRFLOW_HOME="$RUNNER_TEMP/airflow" airflow db migrate
+
+      - name: Test the DAG
+        run: pytest orchestration/tests -q -rs
