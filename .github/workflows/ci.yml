@@ -214,7 +214,7 @@ jobs:
       - name: Products show the 2025-07-01 price rise
         run: |
           psql -c "select _run_date, unit_price from raw.products
-                   where product_id = (select min(product_id) from raw.products)
+                   where product_id = (select min(product_id::integer) from raw.products)
                    order by _run_date;"
 
       - name: The price rise became a second product version
@@ -222,10 +222,10 @@ jobs:
           psql -c "select product_version_key, version_number, unit_cost, unit_price,
                           valid_from, valid_to, is_current
                    from marts.dim_product_history
-                   where product_id = (select min(product_id) from raw.products)
+                   where product_id = (select min(product_id::integer) from raw.products)
                    order by version_number;"
           versions="$(psql -At -c "select count(*) from marts.dim_product_history
-                                   where product_id = (select min(product_id) from raw.products)")"
+                                   where product_id = (select min(product_id::integer) from raw.products)")"
           test "$versions" = "2"
 
       - name: Incremental fct_sales equals a full rebuild
