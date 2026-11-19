@@ -1,0 +1,13 @@
+# Airflow for the DAG integrity test (CI, Python 3.12). Install with:
+#   pip install -r orchestration/requirements-airflow.txt
+# which is the same as:
+#   pip install "apache-airflow==2.10.5" pytest \
+#     --constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-3.12.txt
+#
+# The official constraints file pins every transitive dependency, pytest included
+# (pytest==8.3.4), so pytest is left unpinned here to avoid fighting it.
+# Keep this separate from the root requirements.txt: dbt-core 1.10 needs protobuf>=6,
+# while these constraints pin protobuf 4.25.
+-c https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-3.12.txt
+apache-airflow==2.10.5
+pytest

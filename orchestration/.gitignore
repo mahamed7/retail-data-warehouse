@@ -1,0 +1,2 @@
+# Task and scheduler logs from the local Airflow stack (docker-compose.airflow.yml)
+logs/

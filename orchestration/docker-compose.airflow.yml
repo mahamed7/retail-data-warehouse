@@ -1,0 +1,100 @@
+# Local Airflow stack for the Dukaan daily ELT. From the repository root:
+#   docker compose -f orchestration/docker-compose.airflow.yml up --build
+# UI: http://localhost:8080 (admin / admin unless AIRFLOW_ADMIN_PASSWORD is set).
+# Local development only: every password here is a throwaway default.
+#
+# Services:
+#   warehouse-db  Postgres 16 with database `retail`, the warehouse the DAG loads and builds.
+#   airflow-db    Postgres 16 for Airflow's own metadata. A real database (rather than
+#                 SQLite) lets Airflow use the LocalExecutor and keeps run history in a volume.
+#   airflow       `airflow standalone` (scheduler, webserver and triggerer in one container),
+#                 built from orchestration/Dockerfile with the pipeline and dbt in a venv.
+name: dukaan-airflow
+
+services:
+  warehouse-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: retail
+    ports:
+      # 5433 on the host so this can run next to the root docker-compose.yml (5432).
+      - "${WAREHOUSE_HOST_PORT:-5433}:5432"
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d retail"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  airflow-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  airflow:
+    build:
+      context: ..
+      dockerfile: orchestration/Dockerfile
+    image: dukaan-airflow:2.10.5
+    command: standalone
+    # On Linux, run `export AIRFLOW_UID=$(id -u)` first so files written to the mounted
+    # repo (data/raw, dbt target/, dashboard/data) belong to you.
+    user: "${AIRFLOW_UID:-50000}:0"
+    depends_on:
+      warehouse-db:
+        condition: service_healthy
+      airflow-db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      # Airflow itself
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # New DAGs start paused: unpausing dukaan_daily_elt schedules every day of the
+      # sales period (about 730 runs). Use `airflow dags backfill` for a short window.
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
+      AIRFLOW__WEBSERVER__BASE_URL: http://localhost:8080
+      AIRFLOW__WEBSERVER__SECRET_KEY: dukaan-local-dev-only
+      # Handled by the image entrypoint before `standalone` starts.
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+      # Read by orchestration/dags/dukaan_daily_elt.py
+      DUKAAN_REPO_DIR: /opt/dukaan
+      DUKAAN_PYTHON: /opt/dukaan-venv/bin/python
+      DUKAAN_DBT: /opt/dukaan-venv/bin/dbt
+      PGHOST: warehouse-db
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: retail
+    volumes:
+      - ..:/opt/dukaan
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  warehouse-data:
+  airflow-db-data:
