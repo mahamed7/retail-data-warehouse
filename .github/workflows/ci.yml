@@ -214,7 +214,7 @@ jobs:
       - name: Products show the 2025-07-01 price rise
         run: |
           psql -c "select _run_date, unit_price from raw.products
-                   where product_id = (select min(product_id::integer) from raw.products)
+                   where product_id::integer = (select min(product_id::integer) from raw.products)
                    order by _run_date;"
 
       - name: The price rise became a second product version
