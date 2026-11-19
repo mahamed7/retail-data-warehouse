@@ -78,7 +78,42 @@ jobs:
                    order by year_month desc, revenue desc
                    limit 10;"
 
-      - name: Export dashboard data from the marts
+      # Second path: the same two years delivered as 745 daily batches into another
+      # database. Only this path has price history, so costs are point-in-time here.
+      - name: Full history - generate every daily batch
+        run: python pipeline/generate_data.py --backfill 2024-01-01 2026-01-14
+
+      - name: Full history - load all batches and build
+        env:
+          PGDATABASE: retail_history
+        run: |
+          psql -d retail -c "create database retail_history;"
+          python pipeline/load_raw.py --mode append --backfill 2024-01-01 2026-01-14 2>&1 | tail -3
+          (cd warehouse && dbt build --profiles-dir .)
+
+      - name: Both paths agree on revenue; history changes only cost
+        run: |
+          totals() {
+            psql -d "$1" -At -c "select count(*) || ',' || sum(net_amount) filter (where is_revenue)
+                                 from marts.fct_sales"
+          }
+          full="$(totals retail)"
+          history="$(totals retail_history)"
+          echo "full refresh  (lines, revenue): $full"
+          echo "daily history (lines, revenue): $history"
+          test "$full" = "$history"
+          for db in retail retail_history; do
+            psql -d "$db" -c "select '$db' as path,
+                                     count(*) filter (where version_number > 0) as product_versions,
+                                     count(distinct product_key) filter (where version_number > 0) as products
+                              from marts.dim_product_history;"
+          done
+          psql -d retail -At -c "select 'full refresh margin:  ' || round(sum(gross_margin) / sum(net_amount) filter (where cost_amount is not null), 4) from marts.fct_sales where is_revenue"
+          psql -d retail_history -At -c "select 'point-in-time margin: ' || round(sum(gross_margin) / sum(net_amount) filter (where cost_amount is not null), 4) from marts.fct_sales where is_revenue"
+
+      - name: Export dashboard data from the full-history marts
+        env:
+          PGDATABASE: retail_history
         run: python dashboard/export_data.py
 
       - name: Show dashboard headline KPIs
@@ -124,6 +159,9 @@ jobs:
       WINDOW_START: "2025-06-28"
       WINDOW_END: "2025-07-03"
       REPLAY_DAY: "2025-07-01"
+      # No lookback: each incremental run picks up only lines loaded since the last run,
+      # so the full-refresh comparison below really tests the incremental logic.
+      DBT_VARS: "{incremental_lookback_hours: 0}"
 
     steps:
       - uses: actions/checkout@v4
@@ -145,7 +183,7 @@ jobs:
           while [ "$(date -d "$day" +%s)" -le "$(date -d "$WINDOW_END" +%s)" ]; do
             echo "::group::run date $day"
             python pipeline/load_raw.py --mode append --run-date "$day"
-            (cd warehouse && dbt build --profiles-dir .)
+            (cd warehouse && dbt build --profiles-dir . --vars "$DBT_VARS")
             echo "::endgroup::"
             day="$(date -d "$day + 1 day" +%F)"
           done
@@ -167,7 +205,7 @@ jobs:
           }
           before="$(snapshot)"
           python pipeline/load_raw.py --mode append --run-date "$REPLAY_DAY"
-          (cd warehouse && dbt build --profiles-dir .)
+          (cd warehouse && dbt build --profiles-dir . --vars "$DBT_VARS")
           after="$(snapshot)"
           echo "before replay: $before"
           echo "after replay:  $after"
@@ -178,6 +216,32 @@ jobs:
           psql -c "select _run_date, unit_price from raw.products
                    where product_id = (select min(product_id) from raw.products)
                    order by _run_date;"
+
+      - name: The price rise became a second product version
+        run: |
+          psql -c "select product_version_key, version_number, unit_cost, unit_price,
+                          valid_from, valid_to, is_current
+                   from marts.dim_product_history
+                   where product_id = (select min(product_id) from raw.products)
+                   order by version_number;"
+          versions="$(psql -At -c "select count(*) from marts.dim_product_history
+                                   where product_id = (select min(product_id) from raw.products)")"
+          test "$versions" = "2"
+
+      - name: Incremental fct_sales equals a full rebuild
+        run: |
+          fact_totals() {
+            psql -At -c "select count(*) || ',' || sum(net_amount) || ',' ||
+                                coalesce(sum(cost_amount), 0) || ',' ||
+                                count(*) filter (where order_status = 'completed')
+                         from marts.fct_sales"
+          }
+          incremental="$(fact_totals)"
+          (cd warehouse && dbt build --profiles-dir . --full-refresh --select fct_sales+)
+          rebuilt="$(fact_totals)"
+          echo "incremental:  $incremental"
+          echo "full rebuild: $rebuilt"
+          test "$incremental" = "$rebuilt"
 
   # ---------------------------------------------------------------------------
   # Airflow: the DAG parses, has the right shape, and its commands render
