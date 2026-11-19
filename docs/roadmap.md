@@ -12,7 +12,7 @@ Each phase ships as its own commits on `main`, with CI green before the next pha
 | 2 | History and incremental models | 1 | ✅ done |
 | 3 | Orchestration with Airflow | 1 | 🟡 DAG done; local stack not yet run |
 | 4 | Raw-layer quality gate | 1 | ⚪ planned |
-| 5 | Live dashboard on GitHub Pages | – | 🟡 built; publishing pending |
+| 5 | Live dashboard on GitHub Pages | – | ✅ done |
 
 ---
 
@@ -61,6 +61,6 @@ phases 2 to 4. The interface is fixed in [data-contract.md § Daily batches](dat
 
 - [x] **5.1 Export.** `dashboard/export_data.py` reads the marts and writes `dashboard/data/*.json`: monthly revenue, store league table, category mix, channel and payment mix, and data-quality stats from the run.
 - [x] **5.2 Static dashboard.** `dashboard/index.html` with KPI cards, charts and filters. No build step; works on phones; light and dark themes.
-- [ ] **5.3 Publish** *(next: enable GitHub Pages with the GitHub Actions source)*. CI builds the warehouse, exports the JSON and deploys `dashboard/` to GitHub Pages on every push to `main`.
+- [x] **5.3 Publish.** Live at https://mahamed7.github.io/retail-data-warehouse/ with dbt docs at `/dbt-docs/`. Deployed only from `main` and only when every other job is green. CI builds the warehouse, exports the JSON and deploys `dashboard/` to GitHub Pages on every push to `main`.
 
 **Done when:** the README links to a live dashboard built from the latest CI run.

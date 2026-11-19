@@ -4,6 +4,8 @@
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![dbt](https://img.shields.io/badge/dbt-1.10-FF694B?logo=dbt&logoColor=white)
+[![Live dashboard](https://img.shields.io/badge/Live-dashboard-0f766e)](https://mahamed7.github.io/retail-data-warehouse/)
+[![dbt docs](https://img.shields.io/badge/dbt-docs%20%26%20lineage-FF694B)](https://mahamed7.github.io/retail-data-warehouse/dbt-docs/)
 
 An end-to-end **ELT pipeline and dimensional data warehouse** for a retail chain.
 Python extracts and loads messy point-of-sale data into PostgreSQL. dbt cleans it,
@@ -232,6 +234,8 @@ locally.
 
 ### Dashboard
 
+**Live: [mahamed7.github.io/retail-data-warehouse](https://mahamed7.github.io/retail-data-warehouse/)**, with the [dbt docs and lineage graph](https://mahamed7.github.io/retail-data-warehouse/dbt-docs/) alongside.
+
 [`dashboard/`](dashboard) is a static, no-build sales dashboard: KPI cards with year-on-year
 change, monthly revenue 2024 vs 2025, a sortable store league table with sparklines, category and
 channel/payment mix, and a "data quality handled" panel. `dashboard/export_data.py` regenerates its
@@ -309,7 +313,7 @@ The v2 plan, with every task and its "done when" condition, is in [`docs/roadmap
 - [x] **Phase 2:** SCD type 2 products, point-in-time cost, incremental `fct_sales`
 - [x] **Phase 3:** Airflow DAG with CI integrity tests *(local Docker stack not yet run end to end)*
 - [ ] **Phase 4:** quality gate on each raw batch before dbt runs
-- [x] **Phase 5:** dashboard built from the marts *(publishing to GitHub Pages is next)*
+- [x] **Phase 5:** [live dashboard](https://mahamed7.github.io/retail-data-warehouse/) built from the marts and published to GitHub Pages by CI
 
 ## Author
 
