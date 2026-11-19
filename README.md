@@ -8,7 +8,9 @@
 An end-to-end **ELT pipeline and dimensional data warehouse** for a retail chain.
 Python extracts and loads messy point-of-sale data into PostgreSQL. dbt cleans it,
 models it into a **star schema** and proves it is correct with **147 data tests**.
-Every push rebuilds the whole warehouse from scratch in GitHub Actions.
+Every push rebuilds the whole warehouse from scratch in GitHub Actions, replays it as
+**idempotent daily batches**, and tests the **Airflow DAG** that schedules it. A **sales
+dashboard** is built from the marts.
 
 > **The business:** *Dukaan Retail* is a fictional chain of 8 shops across Somaliland
 > (Hargeisa, Borama, Berbera, Burao and more). It sells groceries, household goods and
@@ -163,14 +165,53 @@ order by revenue desc;
 
 ## Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) starts a PostgreSQL 16 service and runs
-the whole pipeline on every push:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs three jobs on every push:
 
-1. `pytest` unit tests for the generator and loader
-2. Generate the extracts, then load them into `raw`
-3. `dbt source freshness`
-4. `dbt build`: every model plus every data test, so a failing test fails the build
-5. `dbt docs generate`, uploaded as a build artifact
+| Job | What it proves |
+| --- | --- |
+| **Full refresh** | `pytest` (78 tests), generate, load, `dbt source freshness`, `dbt build`, `dbt docs`, then export the dashboard data from the marts |
+| **Daily batches** | Loads 2025-06-28 to 2025-07-03 **one day at a time** with `dbt build` after each day, then **replays a day** and asserts that row counts and revenue don't change (an idempotent load) |
+| **Airflow DAG integrity** | The `dukaan_daily_elt` DAG parses on Airflow 2.10, has the right task chain and schedule, and every command renders for a given run date (28 tests) |
+
+### Daily batches (v2)
+
+The source system can also export **one batch per day**. The loader appends a day in one
+transaction per table: it deletes that day's rows, then reinserts them. Re-running a day is
+always safe. From the CI run:
+
+```text
+run date     order rows   dbt build
+2025-06-28   37           PASS=159 WARN=0 ERROR=0
+2025-06-29   31           PASS=159
+2025-06-30   35           PASS=159
+2025-07-01   29           PASS=159   price rise: Basmati Rice 5kg 5.79 -> 6.25
+2025-07-02   35           PASS=159
+2025-07-03   41           PASS=159
+
+replay 2025-07-01  -> "29 rows of 2025-07-01 replaced"
+before replay: orders 208, items 500, customers 1827, products 720, revenue 2303.52
+after replay:  orders 208, items 500, customers 1827, products 720, revenue 2303.52
+```
+
+See [`docs/data-contract.md`](docs/data-contract.md#daily-batches-v2) for the batch rules.
+
+### Orchestration
+
+[`orchestration/`](orchestration) holds an Airflow 2.10 DAG that runs the whole flow daily with
+catchup, so a backfill is a single command:
+
+`extract → load → quality_gate → dbt_source_freshness → dbt_build → publish_dashboard_data`
+
+It uses retries, timeouts, `depends_on_past` (days load in order) and a structured
+`DUKAAN_ALERT` log line on failure. A Docker Compose stack runs Airflow with the warehouse
+locally.
+
+### Dashboard
+
+[`dashboard/`](dashboard) is a static, no-build sales dashboard: KPI cards with year-on-year
+change, monthly revenue 2024 vs 2025, a sortable store league table with sparklines, category and
+channel/payment mix, and a "data quality handled" panel. `dashboard/export_data.py` regenerates its
+JSON from the marts on every CI run.
 
 ### Results from a CI run
 
@@ -206,8 +247,8 @@ The `mart_monthly_store_performance` table for December 2025:
 ```
 retail-data-warehouse/
 ├── pipeline/
-│   ├── generate_data.py       # Extract: deterministic synthetic POS extracts
-│   └── load_raw.py            # Load: COPY into raw schema + audit log
+│   ├── generate_data.py       # Extract: full extract or one batch per day
+│   └── load_raw.py            # Load: full refresh or idempotent daily append
 ├── tests/                     # pytest unit tests for the pipeline
 ├── warehouse/                 # dbt project
 │   ├── models/
@@ -217,7 +258,11 @@ retail-data-warehouse/
 │   ├── macros/                # schema naming, helpers, custom generic tests
 │   ├── tests/                 # singular reconciliation tests
 │   └── analyses/              # business-question SQL
-├── docs/data-contract.md      # source-to-warehouse agreement
+├── orchestration/             # Airflow DAG, local Airflow stack, DAG tests
+├── dashboard/                 # static dashboard + export from the marts
+├── docs/
+│   ├── data-contract.md       # source-to-warehouse agreement (full + daily)
+│   └── roadmap.md             # v2 phases and tasks
 ├── docker-compose.yml
 └── .github/workflows/ci.yml
 ```
@@ -232,11 +277,13 @@ retail-data-warehouse/
 
 ## Roadmap
 
-- [ ] Orchestrate with Apache Airflow (daily DAG: extract → load → dbt build → alert)
-- [ ] SCD type 2 product dimension with dbt snapshots
-- [ ] Incremental `fct_sales` for daily loads
-- [ ] Power BI / Metabase dashboard on the marts
-- [ ] Great Expectations checks on the raw layer
+The v2 plan, with every task and its "done when" condition, is in [`docs/roadmap.md`](docs/roadmap.md).
+
+- [x] **Phase 1:** daily batch mode with idempotent loads
+- [ ] **Phase 2:** SCD type 2 products, point-in-time cost, incremental `fct_sales`
+- [x] **Phase 3:** Airflow DAG with CI integrity tests *(local Docker stack not yet run end to end)*
+- [ ] **Phase 4:** quality gate on each raw batch before dbt runs
+- [x] **Phase 5:** dashboard built from the marts *(publishing to GitHub Pages is next)*
 
 ## Author
 
