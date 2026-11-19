@@ -9,9 +9,19 @@ on:
 permissions:
   contents: read
 
+env:
+  PGHOST: localhost
+  PGPORT: "5432"
+  PGUSER: postgres
+  PGPASSWORD: postgres
+  PGDATABASE: retail
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # v1 path: one full extract, full refresh, build and test, export dashboard data
+  # ---------------------------------------------------------------------------
   pipeline:
-    name: Generate, load, build and test the warehouse
+    name: Full refresh - generate, load, build, test
     runs-on: ubuntu-latest
 
     services:
@@ -29,13 +39,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-    env:
-      PGHOST: localhost
-      PGPORT: "5432"
-      PGUSER: postgres
-      PGPASSWORD: postgres
-      PGDATABASE: retail
-
     steps:
       - uses: actions/checkout@v4
 
@@ -47,7 +50,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Unit tests (generator and loader helpers)
+      - name: Unit tests (generator, daily slicer, loader SQL)
         run: pytest -q
 
       - name: Extract - generate source CSVs
@@ -75,6 +78,12 @@ jobs:
                    order by year_month desc, revenue desc
                    limit 10;"
 
+      - name: Export dashboard data from the marts
+        run: python dashboard/export_data.py
+
+      - name: Show dashboard headline KPIs
+        run: python -c "import json; print(json.dumps(json.load(open('dashboard/data/summary.json')), indent=2)[:1500])"
+
       - uses: actions/upload-artifact@v4
         with:
           name: dbt-docs
@@ -82,3 +91,116 @@ jobs:
             warehouse/target/index.html
             warehouse/target/manifest.json
             warehouse/target/catalog.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-site
+          path: dashboard/
+
+  # ---------------------------------------------------------------------------
+  # v2 path: daily batches appended one day at a time, rebuilt after each day,
+  # then one day re-loaded to prove the load is idempotent
+  # ---------------------------------------------------------------------------
+  daily-batches:
+    name: Daily batches - append day by day, prove idempotency
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: retail
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      WINDOW_START: "2025-06-28"
+      WINDOW_END: "2025-07-03"
+      REPLAY_DAY: "2025-07-01"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Extract - one batch folder per day
+        run: python pipeline/generate_data.py --backfill "$WINDOW_START" "$WINDOW_END"
+
+      - name: Load and build, one day at a time
+        run: |
+          day="$WINDOW_START"
+          while [ "$(date -d "$day" +%s)" -le "$(date -d "$WINDOW_END" +%s)" ]; do
+            echo "::group::run date $day"
+            python pipeline/load_raw.py --mode append --run-date "$day"
+            (cd warehouse && dbt build --profiles-dir .)
+            echo "::endgroup::"
+            day="$(date -d "$day + 1 day" +%F)"
+          done
+
+      - name: Row counts per run date
+        run: |
+          psql -c "select _run_date, count(*) as order_rows
+                   from raw.orders group by _run_date order by _run_date;"
+
+      - name: Replay one day and prove nothing is duplicated
+        run: |
+          snapshot() {
+            psql -At -c "select
+              (select count(*) from raw.orders) || ',' ||
+              (select count(*) from raw.order_items) || ',' ||
+              (select count(*) from raw.customers) || ',' ||
+              (select count(*) from raw.products) || ',' ||
+              (select coalesce(sum(net_amount), 0) from marts.fct_sales where is_revenue)"
+          }
+          before="$(snapshot)"
+          python pipeline/load_raw.py --mode append --run-date "$REPLAY_DAY"
+          (cd warehouse && dbt build --profiles-dir .)
+          after="$(snapshot)"
+          echo "before replay: $before"
+          echo "after replay:  $after"
+          test "$before" = "$after"
+
+      - name: Products show the 2025-07-01 price rise
+        run: |
+          psql -c "select _run_date, unit_price from raw.products
+                   where product_id = (select min(product_id) from raw.products)
+                   order by _run_date;"
+
+  # ---------------------------------------------------------------------------
+  # Airflow: the DAG parses, has the right shape, and its commands render
+  # ---------------------------------------------------------------------------
+  dag-integrity:
+    name: Airflow DAG integrity
+    runs-on: ubuntu-latest
+    env:
+      DUKAAN_REQUIRE_AIRFLOW: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: orchestration/requirements-airflow.txt
+
+      - name: Install Airflow 2.10.5 with the official constraints
+        run: pip install -r orchestration/requirements-airflow.txt
+
+      - name: Test the DAG
+        run: |
+          export AIRFLOW_HOME="$RUNNER_TEMP/airflow"
+          pytest orchestration/tests -q -rs
