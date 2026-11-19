@@ -94,3 +94,48 @@ order after a status change. The row with the **latest `updated_at` wins**.
 
 Both layers read the standard libpq variables, defaulting to a local dev database:
 `PGHOST=localhost`, `PGPORT=5432`, `PGUSER=postgres`, `PGPASSWORD=postgres`, `PGDATABASE=retail`.
+
+## Daily batches (v2)
+
+From v2 the source system also exports **one batch per day**. Full mode above stays
+supported and unchanged (CI's full-refresh path keeps using it).
+
+### Generator
+
+| Command | Writes |
+| --- | --- |
+| `python pipeline/generate_data.py` | full extract to `data/raw/*.csv` (v1, byte-identical) |
+| `python pipeline/generate_data.py --run-date 2025-07-01` | that day's batch to `data/raw/2025-07-01/*.csv` |
+| `python pipeline/generate_data.py --backfill 2025-06-28 2025-07-03` | one folder per day, inclusive |
+
+A day's batch is a slice of the **same** deterministic dataset as the full extract:
+
+| File | Rows in the batch for day `D` |
+| --- | --- |
+| `orders.csv` | every order row whose `updated_at` date is `D` (new orders, and re-sent versions) |
+| `order_items.csv` | lines of the orders whose **first** export is on `D` (lines are never re-sent) |
+| `customers.csv` | customers whose `signup_date` is `D`. The first batch of a backfill also includes everyone who signed up before it, so the batch is self-contained |
+| `products.csv` | **full snapshot** of all products with `unit_price` / `unit_cost` / `is_active` **as of `D`** (so the 2025-07-01 price rise shows up as a change) |
+| `stores.csv` | full snapshot of all stores |
+
+Same columns and quality issues as the full extract. An empty day still writes all five
+files (header only where there are no rows).
+
+### Loader
+
+| Command | Behaviour |
+| --- | --- |
+| `python pipeline/load_raw.py` | full refresh from `data/raw/*.csv` (v1) |
+| `python pipeline/load_raw.py --mode append --run-date 2025-07-01` | appends `data/raw/2025-07-01/*.csv` |
+
+- Every raw table gets a third metadata column, `_run_date date` (`null` in full mode).
+- Append mode creates missing tables, then in **one transaction per file** deletes
+  `where _run_date = D` and inserts the batch, so re-running a day never creates duplicates.
+- `raw._load_audit` gains `run_date date` and `mode text`.
+
+### Warehouse
+
+- `stg_products` and `stg_stores` keep the **latest snapshot per id**, ordered by
+  `_run_date desc nulls last, _loaded_at desc`.
+- `stg_orders` already keeps the latest `updated_at` per order; `stg_customers` already
+  deduplicates.
