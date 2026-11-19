@@ -7,7 +7,7 @@
 
 An end-to-end **ELT pipeline and dimensional data warehouse** for a retail chain.
 Python extracts and loads messy point-of-sale data into PostgreSQL. dbt cleans it,
-models it into a **star schema** and proves it is correct with **nearly 150 data tests**.
+models it into a **star schema** and proves it is correct with **147 data tests**.
 Every push rebuilds the whole warehouse from scratch in GitHub Actions.
 
 > **The business:** *Dukaan Retail* is a fictional chain of 8 shops across Somaliland
@@ -171,6 +171,35 @@ the whole pipeline on every push:
 3. `dbt source freshness`
 4. `dbt build`: every model plus every data test, so a failing test fails the build
 5. `dbt docs generate`, uploaded as a build artifact
+
+### Results from a CI run
+
+```text
+pytest            36 passed
+load_raw.py       86,612 rows loaded into raw in 0.38s
+                  (customers 2,040 · orders 25,250 · order_items 59,194 · products 120 · stores 8)
+source freshness  5 of 5 PASS
+dbt build         PASS=158  WARN=1  ERROR=0   (12 models + 147 data tests)
+```
+
+The one warning is deliberate. The staging `relationships` test flags the **44 order lines**
+that point at a product missing from the product extract. The lines are kept, mapped to the
+*Unknown product* member, and the strict mart-level tests pass.
+
+The `mart_monthly_store_performance` table for December 2025:
+
+```text
+        store_name        | year_month | revenue | margin_pct
+--------------------------+------------+---------+------------
+ Dukaan Berbera Port      | 2025-12    | 4078.84 |     0.2670
+ Dukaan Hargeisa Central  | 2025-12    | 3034.12 |     0.2748
+ Dukaan Wajaale Border    | 2025-12    | 2929.08 |     0.2773
+ Dukaan Burao Main Street | 2025-12    | 2586.32 |     0.2922
+ Dukaan Borama Market     | 2025-12    | 1683.62 |     0.2813
+ Dukaan Erigavo           | 2025-12    |  816.18 |     0.3034
+ Dukaan Gabiley           | 2025-12    |  580.62 |     0.2623
+ Dukaan Sheikh            | 2025-12    |  465.61 |     0.2890
+```
 
 ## Project structure
 
