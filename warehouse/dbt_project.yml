@@ -23,6 +23,8 @@ vars:
   # Customer segmentation thresholds, counted on completed orders.
   returning_min_orders: 2
   loyal_min_orders: 10
+  # fct_sales is incremental: lines loaded within this window of the last run are re-processed.
+  incremental_lookback_hours: 72
 
 models:
   retail_dw:

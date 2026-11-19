@@ -14,7 +14,8 @@ renamed as (
         lower({{ clean_text('channel') }}) as channel,
         lower({{ clean_text('payment_method') }}) as payment_method,
         lower({{ clean_text('status') }}) as order_status,
-        {{ clean_text('updated_at') }}::timestamp as updated_at
+        {{ clean_text('updated_at') }}::timestamp as updated_at,
+        _loaded_at
     from source
 
 ),
@@ -31,9 +32,10 @@ ranked as (
         payment_method,
         order_status,
         updated_at,
+        _loaded_at,
         row_number() over (
             partition by order_id
-            order by updated_at desc nulls last
+            order by updated_at desc nulls last, _loaded_at desc
         ) as version_rank
     from renamed
 
@@ -49,6 +51,7 @@ select
     channel,
     payment_method,
     order_status,
-    updated_at
+    updated_at,
+    _loaded_at
 from ranked
 where version_rank = 1

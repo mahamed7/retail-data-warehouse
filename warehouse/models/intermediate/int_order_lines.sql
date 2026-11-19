@@ -6,7 +6,8 @@ with order_items as (
         product_id,
         quantity,
         unit_price,
-        discount_amount
+        discount_amount,
+        _loaded_at
     from {{ ref('stg_order_items') }}
 
 ),
@@ -22,17 +23,22 @@ orders as (
         order_date,
         channel,
         payment_method,
-        order_status
+        order_status,
+        _loaded_at
     from {{ ref('stg_orders') }}
 
 ),
 
-products as (
+-- Point-in-time: each line is costed with the product version valid on the order date.
+product_versions as (
 
     select
+        product_version_key,
         product_id,
-        unit_cost
-    from {{ ref('stg_products') }}
+        unit_cost,
+        valid_from,
+        valid_to
+    from {{ ref('int_product_versions') }}
 
 ),
 
@@ -50,16 +56,21 @@ joined as (
         orders.payment_method,
         orders.order_status,
         order_items.product_id,
-        products.product_id is not null as is_known_product,
+        product_versions.product_id is not null as is_known_product,
+        product_versions.product_version_key,
         order_items.quantity,
         order_items.unit_price,
-        products.unit_cost,
-        order_items.discount_amount
+        product_versions.unit_cost,
+        order_items.discount_amount,
+        -- Watermark for incremental models: the later of the order's and the line's load.
+        greatest(orders._loaded_at, order_items._loaded_at) as source_loaded_at
     from order_items
     inner join orders
         on order_items.order_id = orders.order_id
-    left join products
-        on order_items.product_id = products.product_id
+    left join product_versions
+        on order_items.product_id = product_versions.product_id
+        and orders.order_date >= product_versions.valid_from
+        and (product_versions.valid_to is null or orders.order_date < product_versions.valid_to)
 
 )
 
@@ -76,13 +87,15 @@ select
     order_status,
     product_id,
     is_known_product,
+    product_version_key,
     quantity,
     unit_price,
     unit_cost,
     (quantity * unit_price)::numeric(12, 2) as gross_amount,
     discount_amount,
     (quantity * unit_price - discount_amount)::numeric(12, 2) as net_amount,
-    -- Cost uses the catalogue's current unit_cost (no cost history in the source).
+    -- Cost uses the unit_cost in force on the order date (see int_product_versions).
     -- Orphan products have no cost, so cost_amount stays null instead of a fake 0.
-    (quantity * unit_cost)::numeric(12, 2) as cost_amount
+    (quantity * unit_cost)::numeric(12, 2) as cost_amount,
+    source_loaded_at
 from joined

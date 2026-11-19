@@ -202,3 +202,37 @@ models:
         data_tests:
           - not_null
           - non_negative
+
+  - name: stg_product_snapshots
+    description: >
+      Every catalogue snapshot received: one row per product per snapshot day, with the
+      tracked type 2 attributes (cost, price, active flag). Daily batches each carry a full
+      snapshot; a full-refresh load contributes one snapshot dated by its load day.
+      Input to `int_product_versions`.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ["product_id", "snapshot_date"]
+    columns:
+      - name: product_id
+        description: Product identifier.
+        data_tests:
+          - not_null
+      - name: snapshot_date
+        description: Batch day of the snapshot (`_run_date`), or the load day for a full refresh.
+        data_tests:
+          - not_null
+      - name: unit_cost
+        description: Cost price on that day, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: unit_price
+        description: List price on that day, USD.
+        data_tests:
+          - not_null
+          - non_negative
+      - name: is_active
+        description: Whether the product was on sale that day.
+        data_tests:
+          - not_null

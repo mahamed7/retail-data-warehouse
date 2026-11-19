@@ -13,7 +13,8 @@ renamed as (
         {{ clean_text('quantity') }}::integer as quantity,
         {{ clean_text('unit_price') }}::numeric(12, 2) as unit_price,
         -- An empty discount means no discount.
-        coalesce({{ clean_text('discount_amount') }}::numeric(12, 2), 0)::numeric(12, 2) as discount_amount
+        coalesce({{ clean_text('discount_amount') }}::numeric(12, 2), 0)::numeric(12, 2) as discount_amount,
+        _loaded_at
     from source
 
 )

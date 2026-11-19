@@ -65,3 +65,64 @@ models:
         description: quantity * unit_cost, USD; null for orphan products.
         data_tests:
           - non_negative
+
+  - name: int_product_versions
+    description: >
+      Type 2 history of each product's cost, price and active flag, rebuilt from
+      `stg_product_snapshots` with a gaps-and-islands pass. A new version starts on any
+      day a tracked attribute differs from the day before. Intervals are half-open
+      (`valid_from` <= day < `valid_to`) and contiguous; the first version is open-ended
+      backwards (from 1900-01-01) because history before the first snapshot is unknown.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ["product_id", "version_number"]
+    columns:
+      - name: product_version_key
+        description: Surrogate key, product_id * 1000 + version_number (101002 = product 101, version 2).
+        data_tests:
+          - unique
+          - not_null
+      - name: product_id
+        description: Product identifier.
+        data_tests:
+          - not_null
+      - name: version_number
+        description: 1 for the earliest known version, increasing by one per change.
+        data_tests:
+          - not_null
+      - name: valid_from
+        description: First day this version applies (inclusive).
+        data_tests:
+          - not_null
+      - name: valid_to
+        description: First day the next version applies (exclusive); null for the current version.
+      - name: is_current
+        description: True for the latest version of each product.
+        data_tests:
+          - not_null
+
+unit_tests:
+  - name: product_versions_split_on_any_tracked_change
+    description: >
+      Same values on consecutive days stay one version; a price rise starts version 2; a
+      return to the old values is a new version 3, not a reopening of version 1. Products
+      are versioned independently.
+    model: int_product_versions
+    given:
+      - input: ref('stg_product_snapshots')
+        rows:
+          - {product_id: 101, snapshot_date: "2025-06-29", unit_cost: 4.24, unit_price: 5.79, is_active: true}
+          - {product_id: 101, snapshot_date: "2025-06-30", unit_cost: 4.24, unit_price: 5.79, is_active: true}
+          - {product_id: 101, snapshot_date: "2025-07-01", unit_cost: 4.58, unit_price: 6.25, is_active: true}
+          - {product_id: 101, snapshot_date: "2025-07-02", unit_cost: 4.58, unit_price: 6.25, is_active: true}
+          - {product_id: 101, snapshot_date: "2025-07-03", unit_cost: 4.24, unit_price: 5.79, is_active: true}
+          - {product_id: 202, snapshot_date: "2025-06-29", unit_cost: 1.00, unit_price: 2.00, is_active: true}
+          - {product_id: 202, snapshot_date: "2025-07-02", unit_cost: 1.00, unit_price: 2.00, is_active: false}
+    expect:
+      rows:
+        - {product_version_key: 101001, product_id: 101, version_number: 1, unit_price: 5.79, valid_from: "1900-01-01", valid_to: "2025-07-01", is_current: false}
+        - {product_version_key: 101002, product_id: 101, version_number: 2, unit_price: 6.25, valid_from: "2025-07-01", valid_to: "2025-07-03", is_current: false}
+        - {product_version_key: 101003, product_id: 101, version_number: 3, unit_price: 5.79, valid_from: "2025-07-03", valid_to: null, is_current: true}
+        - {product_version_key: 202001, product_id: 202, version_number: 1, unit_price: 2.00, valid_from: "1900-01-01", valid_to: "2025-07-02", is_current: false}
+        - {product_version_key: 202002, product_id: 202, version_number: 2, unit_price: 2.00, valid_from: "2025-07-02", valid_to: null, is_current: true}

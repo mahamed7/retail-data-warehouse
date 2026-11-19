@@ -242,6 +242,22 @@ models:
               arguments:
                 to: ref('dim_store')
                 field: store_key
+      - name: product_version_key
+        description: >
+          Foreign key to `dim_product_history`: the product version in force on the order
+          date, used for point-in-time cost. -1 when the product is missing from the catalogue.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_product_history')
+                field: product_version_key
+      - name: source_loaded_at
+        description: >
+          Incremental watermark: the later of the order's and the line's `_loaded_at`. Lines
+          loaded within `incremental_lookback_hours` of the last run are re-processed.
+        data_tests:
+          - not_null
       - name: product_key
         description: Foreign key to `dim_product`; -1 when the product is missing from the catalogue.
         data_tests:
@@ -412,3 +428,51 @@ models:
           returned_orders / (completed_orders + returned_orders) as a fraction:
           the share of fulfilled orders that came back. Cancelled orders are excluded
           because they were never fulfilled. Null when the denominator is 0.
+
+  - name: dim_product_history
+    description: >
+      Type 2 product dimension. Grain: one row per product version. Cost, price and the
+      active flag are historical; SKU, name and category are type 1 (latest values).
+      Versions are contiguous half-open intervals; exactly one is current per product.
+      Includes the Unknown product member (-1). `fct_sales.product_version_key` points here,
+      so each sale is costed at the price list in force on its order date.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ["product_key", "valid_from"]
+    columns:
+      - name: product_version_key
+        description: Surrogate key of the version (product_id * 1000 + version_number); -1 for Unknown.
+        data_tests:
+          - unique
+          - not_null
+      - name: product_key
+        description: Durable product key, equal to `dim_product.product_key`.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_product')
+                field: product_key
+      - name: version_number
+        description: 1 for the earliest known version; 0 for the Unknown member.
+        data_tests:
+          - not_null
+      - name: unit_cost
+        description: Cost price during this version, USD.
+        data_tests:
+          - non_negative
+      - name: unit_price
+        description: List price during this version, USD.
+        data_tests:
+          - non_negative
+      - name: valid_from
+        description: First day of the version (inclusive).
+        data_tests:
+          - not_null
+      - name: valid_to
+        description: Day the next version starts (exclusive); null while current.
+      - name: is_current
+        description: True for the version in force today.
+        data_tests:
+          - not_null
