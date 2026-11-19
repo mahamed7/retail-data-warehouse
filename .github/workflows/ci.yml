@@ -127,10 +127,17 @@ jobs:
             warehouse/target/manifest.json
             warehouse/target/catalog.json
 
-      - uses: actions/upload-artifact@v4
+      - name: Assemble the Pages site (dashboard + dbt docs)
+        run: |
+          mkdir -p _site/dbt-docs
+          cp -r dashboard/index.html dashboard/app.js dashboard/styles.css dashboard/data _site/
+          cp warehouse/target/index.html warehouse/target/manifest.json warehouse/target/catalog.json _site/dbt-docs/
+          touch _site/.nojekyll
+          find _site -type f | sort
+
+      - uses: actions/upload-pages-artifact@v3
         with:
-          name: dashboard-site
-          path: dashboard/
+          path: _site
 
   # ---------------------------------------------------------------------------
   # v2 path: daily batches appended one day at a time, rebuilt after each day,
@@ -271,3 +278,27 @@ jobs:
 
       - name: Test the DAG
         run: pytest orchestration/tests -q -rs
+
+  # ---------------------------------------------------------------------------
+  # Publish the dashboard and dbt docs to GitHub Pages, only from main and only
+  # when every other job is green
+  # ---------------------------------------------------------------------------
+  deploy-pages:
+    name: Publish dashboard to GitHub Pages
+    needs: [pipeline, daily-batches, dag-integrity]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
