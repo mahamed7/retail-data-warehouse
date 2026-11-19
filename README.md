@@ -121,6 +121,32 @@ The source data has realistic problems on purpose. Each one is documented in the
 | Blank discount means zero | `coalesce(..., 0)` | `non_negative`, discount ≤ gross |
 | Price at time of sale differs from today's list price | revenue uses the price at time of sale, never the list price | |
 
+### Quality gate on raw (before dbt)
+
+The loader lands every source column as text, so a load never fails on bad data. Bad data is
+caught next, by [`pipeline/check_raw.py`](pipeline/check_raw.py), before dbt touches it.
+
+- **32 data-contract checks** run inside PostgreSQL: row counts, integer keys, parseable
+  numbers and timestamps (`pg_input_is_valid`, with every cast guarded), allowed values,
+  dates inside the sales period, "updated on the batch day", discount within the line total,
+  unique line ids, and referential checks to stores, customers, orders and products.
+- **Severity:** a contract breach is an `error` and stops the run (exit 1). Known, tolerated
+  source issues are a `warn`: for example, the 44 lines pointing at a missing product.
+- **Output:** a console table, `reports/quality/<batch>.json` with up to 3 sample bad rows per
+  check, and a row per check in `raw._quality_results`, so gate history is queryable.
+
+From CI, a deliberately corrupted batch:
+
+```text
+Quality gate FAILED for 2025-07-01: 30 passed, 0 warnings, 2 failed.
+ERROR orders.status_in_contract: 1 bad rows. Sample: [{'order_id': '118017', 'status': 'shipped', ...}]
+ERROR order_items.quantity_positive_integer: 1 bad rows. Sample: [{'order_item_id': '42649', 'quantity': 'two', ...}]
+gate exit code on corrupted batch: 1          (dbt never runs on this batch)
+```
+
+The gate runs on the full extract (30 passed, 1 warning), on every daily batch (32 of 32),
+over the 745-day history, and as the `quality_gate` task in Airflow.
+
 **Reconciliation tests** check that no money is created or lost between layers:
 
 - `assert_fct_sales_revenue_reconciles_with_staging`: fact-table revenue equals revenue calculated straight from the cleaned source, to the cent.
@@ -172,7 +198,7 @@ order by revenue desc;
 | Job | What it proves |
 | --- | --- |
 | **Full refresh** | `pytest` (78 tests), generate, load, `dbt source freshness`, `dbt build`, `dbt docs`, then export the dashboard data from the marts |
-| **Daily batches** | Loads 2025-06-28 to 2025-07-03 **one day at a time** with `dbt build` after each day, then **replays a day** and asserts that row counts and revenue don't change (an idempotent load) |
+| **Daily batches** | Loads 2025-06-28 to 2025-07-03 **one day at a time**, running the quality gate and `dbt build` after each day. Then it **corrupts a batch** and asserts that the gate rejects it, and **replays a day** to show that row counts and revenue don't change (an idempotent load) |
 | **Full history** *(in the full refresh job)* | Builds the same two years from **745 daily batches** in a second database, and asserts that lines and revenue match the full refresh exactly. The dashboard is exported from this point-in-time warehouse |
 | **Airflow DAG integrity** | The `dukaan_daily_elt` DAG parses on Airflow 2.10, has the right task chain and schedule, and every command renders for a given run date (28 tests) |
 
@@ -312,7 +338,7 @@ The v2 plan, with every task and its "done when" condition, is in [`docs/roadmap
 - [x] **Phase 1:** daily batch mode with idempotent loads
 - [x] **Phase 2:** SCD type 2 products, point-in-time cost, incremental `fct_sales`
 - [x] **Phase 3:** Airflow DAG with CI integrity tests *(local Docker stack not yet run end to end)*
-- [ ] **Phase 4:** quality gate on each raw batch before dbt runs
+- [x] **Phase 4:** quality gate on each raw batch before dbt runs
 - [x] **Phase 5:** [live dashboard](https://mahamed7.github.io/retail-data-warehouse/) built from the marts and published to GitHub Pages by CI
 
 ## Author

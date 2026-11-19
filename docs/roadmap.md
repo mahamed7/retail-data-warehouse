@@ -11,7 +11,7 @@ Each phase ships as its own commits on `main`, with CI green before the next pha
 | 1 | Daily batch mode | – | ✅ done |
 | 2 | History and incremental models | 1 | ✅ done |
 | 3 | Orchestration with Airflow | 1 | 🟡 DAG done; local stack not yet run |
-| 4 | Raw-layer quality gate | 1 | ⚪ planned |
+| 4 | Raw-layer quality gate | 1 | ✅ done |
 | 5 | Live dashboard on GitHub Pages | – | ✅ done |
 
 ---
@@ -54,8 +54,12 @@ phases 2 to 4. The interface is fixed in [data-contract.md § Daily batches](dat
 
 ## Phase 4: Raw-layer quality gate
 
-- [ ] **4.1 Checks before transform.** Row counts per batch, required columns present, numeric columns parse, and no future dates. Implemented with Great Expectations or Python checks plus a JSON report.
-- [ ] **4.2 Fail fast.** A failing batch stops the run before `dbt build`, in both CI and Airflow.
+- [x] **4.1 Checks before transform.** `pipeline/check_raw.py`: 32 declarative SQL checks covering required columns, row counts, types (`pg_input_is_valid`), allowed values, date ranges, uniqueness and referential integrity. It writes a JSON report and a results-history table. Plain Python and SQL instead of Great Expectations: no heavy dependency, and every check runs inside Postgres.
+- [x] **4.2 Fail fast.** A failing batch stops the run before `dbt build`, in both CI and Airflow.
+
+> ✅ **Shipped.** In CI, a batch corrupted with status `shipped` and quantity `two` makes the gate exit 1
+> with exactly those two checks failed. After a replay it passes again (32 of 32). The full extract passes
+> with one expected warning: 44 orphan product lines.
 
 ## Phase 5: Live dashboard on GitHub Pages
 

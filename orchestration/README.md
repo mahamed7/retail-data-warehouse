@@ -18,7 +18,7 @@ as CI and local development ([data contract, "Daily batches (v2)"](../docs/data-
 flowchart LR
     extract["extract<br/><code>generate_data.py --run-date ds</code>"]
     load["load<br/><code>load_raw.py --mode append --run-date ds</code>"]
-    gate["quality_gate<br/><code>check_raw.py --run-date ds</code><br/>(Phase 4 placeholder)"]
+    gate["quality_gate<br/><code>check_raw.py --run-date ds</code><br/>(32 contract checks)"]
     fresh["dbt_source_freshness<br/><code>dbt source freshness</code>"]
     build["dbt_build<br/><code>dbt build</code>"]
     publish["publish_dashboard_data<br/><code>export_data.py --out dashboard/data</code>"]
@@ -29,7 +29,7 @@ flowchart LR
 | --- | --- | --- |
 | `extract` | `python pipeline/generate_data.py --run-date {{ ds }}`, plus `--include-history` when no earlier run has succeeded | Writes the day's batch to `data/raw/{{ ds }}/`. The history flag adds customers who signed up before that day, so the first day of a backfill window on an empty warehouse passes `stg_orders`' relationship test |
 | `load` | `python pipeline/load_raw.py --mode append --run-date {{ ds }}` | Deletes and reloads that day's rows in `raw.*` |
-| `quality_gate` | `python pipeline/check_raw.py --run-date {{ ds }}` | Phase 4. Until that script exists the task logs `quality gate not configured yet` and exits 0. Once it exists, a non-zero exit fails the task and stops the run before dbt |
+| `quality_gate` | `python pipeline/check_raw.py --run-date {{ ds }}` | Runs the Phase 4 quality gate. A breach of the data contract (exit 1) or a gate that cannot run (exit 2) fails the task and stops the run before dbt. Without the script (a checkout from before Phase 4) the task logs `quality gate not configured yet` and passes |
 | `dbt_source_freshness` | `dbt source freshness --profiles-dir .` | Fails if `raw` was not just loaded (`_loaded_at`) |
 | `dbt_build` | `dbt build --profiles-dir . --vars '{"run_date": "{{ ds }}"}'` | Builds and tests every model. `run_date` is available to date-aware models later on |
 | `publish_dashboard_data` | `python dashboard/export_data.py --out dashboard/data` | Refreshes the dashboard JSON |

@@ -127,7 +127,7 @@ One run per business day (`ds`) of the synthetic sales period, 2024-01-01 to 202
 | --- | --- |
 | `extract` | `python pipeline/generate_data.py --run-date {{ ds }}` writes `data/raw/{{ ds }}/` (adds `--include-history` when no earlier run has succeeded) |
 | `load` | `python pipeline/load_raw.py --mode append --run-date {{ ds }}` replaces that day's rows in `raw.*` |
-| `quality_gate` | `python pipeline/check_raw.py --run-date {{ ds }}` once Phase 4 adds it; until then it logs "quality gate not configured yet" and passes |
+| `quality_gate` | `python pipeline/check_raw.py --run-date {{ ds }}` runs 32 data-contract checks on the batch; any error-level failure stops the run before dbt |
 | `dbt_source_freshness` | `dbt source freshness` fails if the raw tables were not just loaded |
 | `dbt_build` | `dbt build` runs and tests staging, intermediate and marts |
 | `publish_dashboard_data` | `python dashboard/export_data.py --out dashboard/data` refreshes the dashboard JSON |
@@ -191,9 +191,10 @@ with DAG(
         "Delete-and-insert the day's rows in the `raw` schema, one transaction per file.",
     )
 
-    # Placeholder for Phase 4. Runs pipeline/check_raw.py when it exists; until then it
-    # logs that no gate is configured and exits 0 so the rest of the run continues.
-    # A non-zero exit from check_raw.py fails this task and stops the run before dbt.
+    # Phase 4 quality gate: pipeline/check_raw.py validates the day's raw batch against
+    # the data contract. Exit 1 (a contract breach) or 2 (could not run) fails this task
+    # and stops the run before dbt. The fallback branch only matters on a checkout from
+    # before Phase 4, where the script does not exist yet.
     quality_gate = repo_task(
         "quality_gate",
         "\n".join(
@@ -207,8 +208,8 @@ with DAG(
                 "fi",
             ]
         ),
-        "Raw-layer checks on the day's batch (Phase 4). Passes with a log line until "
-        "`pipeline/check_raw.py` exists.",
+        "Validate the day's raw batch against the data contract (`pipeline/check_raw.py`). "
+        "Writes `reports/quality/{{ ds }}.json` and appends to `raw._quality_results`.",
     )
 
     dbt_source_freshness = repo_task(
