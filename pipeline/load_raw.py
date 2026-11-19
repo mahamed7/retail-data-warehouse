@@ -41,7 +41,7 @@ import re
 import sys
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg
@@ -320,21 +320,40 @@ def load_all(data_dir: Path, env: Mapping[str, str], run_date: date | None = Non
 
     Stops at the first failure. Returns the total number of rows loaded.
     """
-    source_dir = data_dir if run_date is None else batch_dir(data_dir, run_date)
-    files = find_csv_files(source_dir)
+    return load_batches(data_dir, env, [run_date])
+
+
+def days_between(start: date, end: date) -> list[date]:
+    """Every day from ``start`` to ``end``, inclusive."""
+    return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+
+
+def load_batches(data_dir: Path, env: Mapping[str, str], run_dates: Sequence[date | None]) -> int:
+    """Load several batches in order over one connection (``None`` means the full extract).
+
+    Every batch is checked for files before anything is loaded, so a missing day fails
+    fast instead of half-way through a backfill. Returns the total number of rows loaded.
+    """
+    plan = [
+        (run_date, find_csv_files(data_dir if run_date is None else batch_dir(data_dir, run_date)))
+        for run_date in run_dates
+    ]
     params = connection_params(env)
-    loaded_at = datetime.now(timezone.utc)
     log.info(
         "Connecting to %s:%s/%s as %s",
         params["host"], params["port"], params["dbname"], params["user"],
     )
-    log.info(
-        "Mode %s: loading %d files from %s",
-        FULL_MODE if run_date is None else f"{APPEND_MODE} ({run_date})", len(files), source_dir,
-    )
+    total = 0
     with psycopg.connect(autocommit=True, **params) as conn:
         ensure_schema(conn)
-        return sum(load_file(conn, path, loaded_at, run_date) for path in files)
+        for run_date, files in plan:
+            loaded_at = datetime.now(timezone.utc)
+            log.info(
+                "Mode %s: loading %d files",
+                FULL_MODE if run_date is None else f"{APPEND_MODE} ({run_date})", len(files),
+            )
+            total += sum(load_file(conn, path, loaded_at, run_date) for path in files)
+    return total
 
 
 # --------------------------------------------------------------------------- #
@@ -367,14 +386,29 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--run-date", type=iso_date, metavar="D",
-        help="batch day to load, YYYY-MM-DD (required with --mode append)",
+        help="batch day to load, YYYY-MM-DD (append mode needs this or --backfill)",
+    )
+    parser.add_argument(
+        "--backfill", type=iso_date, nargs=2, metavar=("START", "END"),
+        help="append every daily batch from START to END inclusive, in order",
     )
     args = parser.parse_args(argv)
-    if args.mode == APPEND_MODE and args.run_date is None:
-        parser.error("--mode append requires --run-date")
-    if args.mode == FULL_MODE and args.run_date is not None:
-        parser.error("--run-date only applies to --mode append")
+    if args.run_date is not None and args.backfill is not None:
+        parser.error("use either --run-date or --backfill, not both")
+    if args.mode == APPEND_MODE and args.run_date is None and args.backfill is None:
+        parser.error("--mode append requires --run-date or --backfill")
+    if args.mode == FULL_MODE and (args.run_date is not None or args.backfill is not None):
+        parser.error("--run-date and --backfill only apply to --mode append")
+    if args.backfill is not None and args.backfill[0] > args.backfill[1]:
+        parser.error("--backfill START must not be after END")
     return args
+
+
+def requested_batches(args: argparse.Namespace) -> list[date | None]:
+    """The batches a parsed command line asks for, in load order."""
+    if args.backfill is not None:
+        return list(days_between(*args.backfill))
+    return [args.run_date]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -382,7 +416,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s")
     started = time.perf_counter()
     try:
-        total_rows = load_all(args.data_dir, os.environ, args.run_date)
+        total_rows = load_batches(args.data_dir, os.environ, requested_batches(args))
     except (LoadError, OSError, UnicodeDecodeError, csv.Error, psycopg.Error) as error:
         log.error("Load failed: %s", error)
         return 1

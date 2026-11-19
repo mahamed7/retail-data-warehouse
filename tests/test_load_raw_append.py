@@ -149,3 +149,37 @@ def test_append_mode_reads_the_run_date_folder(tmp_path: Path) -> None:
     (tmp_path / "orders.csv").write_text("order_id\n1\n", encoding="utf-8")
     with pytest.raises(load_raw.LoadError, match="2025-07-01"):
         load_raw.load_all(tmp_path, {}, RUN_DATE)
+
+
+def test_backfill_expands_to_every_day_in_order() -> None:
+    args = load_raw.parse_args(["--mode", "append", "--backfill", "2025-06-30", "2025-07-02"])
+    assert load_raw.requested_batches(args) == [
+        date(2025, 6, 30), date(2025, 7, 1), date(2025, 7, 2),
+    ]
+
+
+def test_single_run_date_and_full_mode_batches() -> None:
+    assert load_raw.requested_batches(
+        load_raw.parse_args(["--mode", "append", "--run-date", "2025-07-01"])
+    ) == [date(2025, 7, 1)]
+    assert load_raw.requested_batches(load_raw.parse_args([])) == [None]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--mode", "append", "--backfill", "2025-07-02", "2025-07-01"],
+        ["--mode", "append", "--run-date", "2025-07-01", "--backfill", "2025-07-01", "2025-07-02"],
+        ["--backfill", "2025-07-01", "2025-07-02"],
+    ],
+)
+def test_backfill_rejects_bad_combinations(argv: list[str]) -> None:
+    with pytest.raises(SystemExit):
+        load_raw.parse_args(argv)
+
+
+def test_backfill_fails_fast_when_a_day_is_missing(tmp_path: Path) -> None:
+    (tmp_path / "2025-07-01").mkdir()
+    (tmp_path / "2025-07-01" / "orders.csv").write_text("order_id\n1\n", encoding="utf-8")
+    with pytest.raises(load_raw.LoadError, match="2025-07-02"):
+        load_raw.load_batches(tmp_path, {}, [date(2025, 7, 1), date(2025, 7, 2)])
