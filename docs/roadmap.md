@@ -9,7 +9,7 @@ Each phase ships as its own commits on `main`, with CI green before the next pha
 | Phase | Theme | Depends on | Status |
 | --- | --- | --- | --- |
 | 1 | Daily batch mode | – | ✅ done |
-| 2 | History and incremental models | 1 | ⚪ planned |
+| 2 | History and incremental models | 1 | ✅ done |
 | 3 | Orchestration with Airflow | 1 | 🟡 DAG done; local stack not yet run |
 | 4 | Raw-layer quality gate | 1 | ⚪ planned |
 | 5 | Live dashboard on GitHub Pages | – | 🟡 built; publishing pending |
@@ -37,10 +37,14 @@ phases 2 to 4. The interface is fixed in [data-contract.md § Daily batches](dat
 
 ## Phase 2: History and incremental models
 
-- [ ] **2.1 SCD type 2 products.** `snapshots/snap_products.sql` (check strategy on price, cost and active flag) feeds `dim_product_history` with `valid_from`, `valid_to` and `is_current`. The 2025-07-01 price rise must create a second version.
-- [ ] **2.2 Point-in-time joins.** `fct_sales` gets a `product_version_key`, so each sale uses the cost in force on the day it happened, not today's cost.
-- [ ] **2.3 Incremental `fct_sales`.** `materialized='incremental'`, `unique_key='order_item_id'`, `merge` strategy, with a 3-day lookback on `_loaded_at` so late re-sent orders still update.
-- [ ] **2.4 Tests.** No overlapping SCD intervals per product; exactly one current row per product; `dbt build --full-refresh` and the incremental run give identical totals.
+- [x] **2.1 SCD type 2 products.** `dim_product_history` with `valid_from`, `valid_to` and `is_current`, and the 2025-07-01 price rise creates a second version. *Changed from the plan:* versions come from `int_product_versions`, a gaps-and-islands window query over the daily snapshots that `raw` already keeps, not from a dbt snapshot. That makes them business-dated and rebuildable.
+- [x] **2.2 Point-in-time joins.** `fct_sales` gets a `product_version_key`, so each sale uses the cost in force on the day it happened, not today's cost.
+- [x] **2.3 Incremental `fct_sales`.** `materialized='incremental'`, `unique_key='order_item_id'`, `delete+insert` strategy (supported on every Postgres version), with a watermark on the order's and line's `_loaded_at` and a 72-hour lookback (`incremental_lookback_hours`).
+- [x] **2.4 Tests.** No overlapping SCD intervals per product, and exactly one current row per product (`assert_product_history_is_contiguous`). Every sale uses the version in force (`assert_sales_use_version_in_force`). A dbt unit test pins the versioning rules. In CI, `dbt build --full-refresh` and the incremental run give identical totals.
+
+> ✅ **Shipped.** CI: product 101 has 2 versions (5.79 → 6.25 on 2025-07-01). Incremental equals full rebuild
+> (500 lines, 2439.01 net, 1750.83 cost). The 745-day history path matches the full refresh on lines and
+> revenue (59,194 / 294,099.35), with point-in-time margin of 28.20% against 24.31% using today's cost.
 
 ## Phase 3: Orchestration with Airflow
 

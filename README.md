@@ -7,7 +7,7 @@
 
 An end-to-end **ELT pipeline and dimensional data warehouse** for a retail chain.
 Python extracts and loads messy point-of-sale data into PostgreSQL. dbt cleans it,
-models it into a **star schema** and proves it is correct with **147 data tests**.
+models it into a **star schema** with **type 2 product history**, and proves it is correct with **177 data tests and a dbt unit test**.
 Every push rebuilds the whole warehouse from scratch in GitHub Actions, replays it as
 **idempotent daily batches**, and tests the **Airflow DAG** that schedules it. A **sales
 dashboard** is built from the marts.
@@ -171,6 +171,7 @@ order by revenue desc;
 | --- | --- |
 | **Full refresh** | `pytest` (78 tests), generate, load, `dbt source freshness`, `dbt build`, `dbt docs`, then export the dashboard data from the marts |
 | **Daily batches** | Loads 2025-06-28 to 2025-07-03 **one day at a time** with `dbt build` after each day, then **replays a day** and asserts that row counts and revenue don't change (an idempotent load) |
+| **Full history** *(in the full refresh job)* | Builds the same two years from **745 daily batches** in a second database, and asserts that lines and revenue match the full refresh exactly. The dashboard is exported from this point-in-time warehouse |
 | **Airflow DAG integrity** | The `dukaan_daily_elt` DAG parses on Airflow 2.10, has the right task chain and schedule, and every command renders for a given run date (28 tests) |
 
 ### Daily batches (v2)
@@ -194,6 +195,29 @@ after replay:  orders 208, items 500, customers 1827, products 720, revenue 2303
 ```
 
 See [`docs/data-contract.md`](docs/data-contract.md#daily-batches-v2) for the batch rules.
+
+### History and incremental models (Phase 2)
+
+Product prices and costs change over time (for example, a price rise on 2025-07-01), so
+`dim_product_history` keeps one row per version and every sale is costed at the version in
+force on its order date. From CI:
+
+```text
+product_version_key | version | unit_cost | unit_price | valid_from | valid_to   | is_current
+             101001 |       1 |      4.24 |       5.79 | 1900-01-01 | 2025-07-01 | false
+             101002 |       2 |      4.58 |       6.25 | 2025-07-01 |            | true
+
+full refresh  (lines, revenue): 59194, 294099.35   margin with today's cost:     24.31%
+daily history (lines, revenue): 59194, 294099.35   margin with point-in-time cost: 28.20%
+                                                    (226 versions across 120 products)
+
+incremental fct_sales after 6 days + a replay: 500 lines, 2439.01 net, 1750.83 cost
+full rebuild (--full-refresh):                 500 lines, 2439.01 net, 1750.83 cost
+```
+
+The incremental run uses zero lookback, so it really picks up only the newly loaded lines. A
+**dbt unit test** pins the versioning rules with mocked snapshots, and two singular tests check
+that version intervals are contiguous and that every sale uses the version in force on its date.
 
 ### Orchestration
 
@@ -271,8 +295,10 @@ retail-data-warehouse/
 
 - **ELT, not ETL.** Raw data lands untouched as text, and all the logic lives in version-controlled, tested SQL. When a rule changes, the warehouse can be rebuilt from raw.
 - **Unknown and walk-in members instead of dropping rows.** Revenue from an orphan product or an anonymous customer is still real revenue, so it stays in the totals and is visible in the dimension.
-- **Natural integer keys.** The source ids are stable, so they serve as dimension keys. Slowly changing dimensions (SCD type 2 with dbt snapshots) are the next step for product prices.
-- **Margin uses current cost.** The source only exports today's cost price, which is noted in the model docs. Historical cost would need a cost-history extract.
+- **Natural integer keys, plus versioned products.** The source ids are stable, so they serve as dimension keys. Products also have a type 2 `dim_product_history`, keyed `product_id * 1000 + version`.
+- **SCD type 2 from raw history, not a dbt snapshot.** Daily batches keep every catalogue snapshot in `raw`, so versions are rebuilt with a gaps-and-islands window query. They are dated by business day and can be rebuilt at any time; a dbt snapshot would be dated by when dbt ran and could not be rebuilt.
+- **Point-in-time cost.** Each sale joins the product version valid on its order date, so margin uses the cost in force then. A full extract carries only today's catalogue (one version per product), so CI also builds the warehouse from the full daily history, and the dashboard uses that.
+- **Incremental fact table.** `fct_sales` uses `delete+insert` on `order_item_id` with a load-time watermark and a configurable lookback (`incremental_lookback_hours`), so late status changes still update old lines.
 - **Local business calendar.** `dim_date.day_of_week` counts Saturday = 1 to Friday = 7, and `is_weekend` marks Friday, the main day off in Somaliland. `iso_day_of_week` is also exposed.
 
 ## Roadmap
@@ -280,7 +306,7 @@ retail-data-warehouse/
 The v2 plan, with every task and its "done when" condition, is in [`docs/roadmap.md`](docs/roadmap.md).
 
 - [x] **Phase 1:** daily batch mode with idempotent loads
-- [ ] **Phase 2:** SCD type 2 products, point-in-time cost, incremental `fct_sales`
+- [x] **Phase 2:** SCD type 2 products, point-in-time cost, incremental `fct_sales`
 - [x] **Phase 3:** Airflow DAG with CI integrity tests *(local Docker stack not yet run end to end)*
 - [ ] **Phase 4:** quality gate on each raw batch before dbt runs
 - [x] **Phase 5:** dashboard built from the marts *(publishing to GitHub Pages is next)*
